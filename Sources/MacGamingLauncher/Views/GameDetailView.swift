@@ -82,6 +82,20 @@ public struct GameDetailView: View {
                                     .shadow(radius: 4)
                                 }
                                 .buttonStyle(.plain)
+
+                                Button(action: { state.launch(game: game, overrideHUD: true) }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "gauge.with.needle")
+                                        Text("Mit HUD")
+                                    }
+                                    .font(.subheadline.bold())
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 12)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Spiel mit sichtbarem Metal Performance HUD (FPS, GPU) starten")
                             }
 
                             // Engine / Bottle Pill
@@ -95,17 +109,20 @@ public struct GameDetailView: View {
                             .background(.ultraThinMaterial)
                             .clipShape(Capsule())
 
-                            if let engine = state.selectedEngine {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "cpu")
-                                    Text(engine.name)
-                                }
-                                .font(.subheadline)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
+                            Spacer()
+
+                            // Utility buttons
+                            Button(action: { state.revealInFinder(game: game) }) {
+                                Image(systemName: "folder")
                             }
+                            .buttonStyle(.bordered)
+                            .help("Im Finder anzeigen")
+
+                            Button(action: { state.openSteamStore(game: game) }) {
+                                Image(systemName: "safari")
+                            }
+                            .buttonStyle(.bordered)
+                            .help("Im Steam Store ansehen")
                         }
                     }
                     .padding(.horizontal, 28)
@@ -117,9 +134,9 @@ public struct GameDetailView: View {
                     // Quick Stats Grid
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 16) {
                         StatBox(title: "Installationsgröße", value: game.formattedSize, icon: "internaldrive")
+                        StatBox(title: "Gespielte Zeit (Lokal)", value: state.playtime(for: game), icon: "timer")
                         StatBox(title: "Zuletzt gespielt", value: game.formattedLastPlayed, icon: "clock")
                         StatBox(title: "Steam App ID", value: game.appId, icon: "tag")
-                        StatBox(title: "Ordner", value: game.installDir, icon: "folder")
                     }
 
                     Divider()
@@ -182,6 +199,19 @@ public struct GameDetailView: View {
                                         get: { currentBottle.metalHudEnabled },
                                         set: { newVal in
                                             currentBottle.metalHudEnabled = newVal
+                                            state.updateBottle(currentBottle)
+                                        }
+                                    )
+                                )
+
+                                ToggleRow(
+                                    title: "Retina / HiDPI",
+                                    subtitle: "Doppelte Pixeldichte für scharfe Darstellung",
+                                    icon: "display.2",
+                                    isOn: Binding(
+                                        get: { currentBottle.retinaEnabled },
+                                        set: { newVal in
+                                            currentBottle.retinaEnabled = newVal
                                             state.updateBottle(currentBottle)
                                         }
                                     )

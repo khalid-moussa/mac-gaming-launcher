@@ -43,18 +43,20 @@ public final class BottleService: @unchecked Sendable {
         var d3dmetal = true
         var metalFx = false
         var metalHud = false
-        let retina = true
+        var retina = true
 
         if let confContent = try? String(contentsOf: confURL, encoding: .utf8) {
             for line in confContent.components(separatedBy: .newlines) {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.contains("WINEMSYNC") {
+                if trimmed.starts(with: "\"WINEMSYNC\"") {
                     msync = trimmed.contains("\"1\"")
-                } else if trimmed.contains("D3DM_ENABLE_METALFX") {
+                } else if trimmed.starts(with: "\"D3DM_ENABLE_METALFX\"") {
                     metalFx = trimmed.contains("\"1\"")
-                } else if trimmed.contains("MTL_HUD_ENABLED") {
+                } else if trimmed.starts(with: "\"MTL_HUD_ENABLED\"") {
                     metalHud = trimmed.contains("\"1\"")
-                } else if trimmed.contains("CX_GRAPHICS_BACKEND") {
+                } else if trimmed.starts(with: "\"RetinaMode\"") || trimmed.starts(with: "\"AllowRetina\"") {
+                    retina = trimmed.contains("\"1\"")
+                } else if trimmed.starts(with: "\"CX_GRAPHICS_BACKEND\"") {
                     if trimmed.contains("\"dxvk\"") {
                         d3dmetal = false
                     }
@@ -81,20 +83,62 @@ public final class BottleService: @unchecked Sendable {
         var lines = original.components(separatedBy: .newlines)
         var updated = false
 
+        var foundMsync = false
+        var foundMetalFx = false
+        var foundMetalHud = false
+        var foundWineD3dMetal = false
+        var foundRetina = false
+
         for (index, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.starts(with: "\"WINEMSYNC\"") {
                 lines[index] = "\"WINEMSYNC\" = \"\(bottle.msyncEnabled ? "1" : "0")\""
                 updated = true
+                foundMsync = true
             } else if trimmed.starts(with: "\"D3DM_ENABLE_METALFX\"") {
                 lines[index] = "\"D3DM_ENABLE_METALFX\" = \"\(bottle.metalFxEnabled ? "1" : "0")\""
                 updated = true
+                foundMetalFx = true
+            } else if trimmed.starts(with: "\"MTL_HUD_ENABLED\"") {
+                lines[index] = "\"MTL_HUD_ENABLED\" = \"\(bottle.metalHudEnabled ? "1" : "0")\""
+                updated = true
+                foundMetalHud = true
+            } else if trimmed.starts(with: "\"WINED3DMETAL\"") {
+                lines[index] = "\"WINED3DMETAL\" = \"\(bottle.d3dMetalEnabled ? "1" : "0")\""
+                updated = true
+                foundWineD3dMetal = true
+            } else if trimmed.starts(with: "\"RetinaMode\"") {
+                lines[index] = "\"RetinaMode\" = \"\(bottle.retinaEnabled ? "1" : "0")\""
+                updated = true
+                foundRetina = true
             }
+        }
+
+        // Insert missing keys before the last closing brace
+        var newKeys: [String] = []
+        if !foundMsync { newKeys.append("\"WINEMSYNC\" = \"\(bottle.msyncEnabled ? "1" : "0")\"") }
+        if !foundMetalFx { newKeys.append("\"D3DM_ENABLE_METALFX\" = \"\(bottle.metalFxEnabled ? "1" : "0")\"") }
+        if !foundMetalHud { newKeys.append("\"MTL_HUD_ENABLED\" = \"\(bottle.metalHudEnabled ? "1" : "0")\"") }
+        if !foundWineD3dMetal { newKeys.append("\"WINED3DMETAL\" = \"\(bottle.d3dMetalEnabled ? "1" : "0")\"") }
+        if !foundRetina { newKeys.append("\"RetinaMode\" = \"\(bottle.retinaEnabled ? "1" : "0")\"") }
+
+        if !newKeys.isEmpty {
+            // Find the last line that is a closing brace
+            if let lastBraceIndex = lines.indices.reversed().first(where: { lines[$0].trimmingCharacters(in: .whitespaces) == "}" }) {
+                lines.insert(contentsOf: newKeys, at: lastBraceIndex)
+            } else {
+                lines.append(contentsOf: newKeys)
+            }
+            updated = true
         }
 
         if updated {
             let newContent = lines.joined(separator: "\n")
-            try? newContent.write(to: confURL, atomically: true, encoding: .utf8)
+            do {
+                try newContent.write(to: confURL, atomically: true, encoding: .utf8)
+            } catch {
+                print("[BottleService] Fehler beim Schreiben der Konfiguration: \(error.localizedDescription)")
+            }
         }
     }
 }

@@ -68,6 +68,21 @@ public struct SidebarView: View {
                             ? Color.accentColor.opacity(0.15)
                             : Color.clear
                     )
+                    .contextMenu {
+                        Button(action: { state.runCustomExecutable(in: bottle) }) {
+                            Label("Windows .exe ausführen...", systemImage: "play.circle")
+                        }
+
+                        Button(action: { state.openWineCfg(in: bottle) }) {
+                            Label("Winecfg öffnen", systemImage: "gearshape")
+                        }
+
+                        Divider()
+
+                        Button(action: { state.revealInFinder(bottle: bottle) }) {
+                            Label("Im Finder anzeigen", systemImage: "folder")
+                        }
+                    }
                 }
             }
 
@@ -117,10 +132,9 @@ public struct SidebarView: View {
 
                     Spacer()
 
-                    if let selectedBottle = state.selectedBottle ?? state.bottles.first(where: { $0.hasSteamInstalled }),
-                       let engine = state.selectedEngine ?? state.engines.first {
+                    if let selectedBottle = state.selectedBottle ?? state.bottles.first(where: { $0.hasSteamInstalled }) {
                         Button(action: {
-                            try? GameRunner.shared.launchSteamClient(bottle: selectedBottle, engine: engine)
+                            state.launchSteamClient(bottle: selectedBottle)
                         }) {
                             Text("Steam öffnen")
                                 .font(.caption.bold())

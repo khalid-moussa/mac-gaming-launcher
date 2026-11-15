@@ -42,8 +42,17 @@ public struct GameGridView: View {
                             onPlay: {
                                 state.launch(game: game)
                             },
+                            onPlayWithHUD: {
+                                state.launch(game: game, overrideHUD: true)
+                            },
                             onSelect: {
                                 state.selectedGame = game
+                            },
+                            onRevealInFinder: {
+                                state.revealInFinder(game: game)
+                            },
+                            onOpenStore: {
+                                state.openSteamStore(game: game)
                             }
                         )
                     }

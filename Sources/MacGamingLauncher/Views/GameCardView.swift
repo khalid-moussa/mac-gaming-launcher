@@ -4,7 +4,10 @@ public struct GameCardView: View {
     public let game: SteamGame
     public let isRunning: Bool
     public let onPlay: () -> Void
+    public let onPlayWithHUD: () -> Void
     public let onSelect: () -> Void
+    public let onRevealInFinder: () -> Void
+    public let onOpenStore: () -> Void
 
     @State private var isHovered: Bool = false
 
@@ -12,12 +15,18 @@ public struct GameCardView: View {
         game: SteamGame,
         isRunning: Bool,
         onPlay: @escaping () -> Void,
-        onSelect: @escaping () -> Void
+        onPlayWithHUD: @escaping () -> Void,
+        onSelect: @escaping () -> Void,
+        onRevealInFinder: @escaping () -> Void,
+        onOpenStore: @escaping () -> Void
     ) {
         self.game = game
         self.isRunning = isRunning
         self.onPlay = onPlay
+        self.onPlayWithHUD = onPlayWithHUD
         self.onSelect = onSelect
+        self.onRevealInFinder = onRevealInFinder
+        self.onOpenStore = onOpenStore
     }
 
     public var body: some View {
@@ -48,9 +57,9 @@ public struct GameCardView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(isHovered ? Color.accentColor : Color.white.opacity(0.1), lineWidth: isHovered ? 2 : 1)
+                            .stroke(isHovered ? Color.accentColor : Color.white.opacity(0.12), lineWidth: isHovered ? 2 : 1)
                     )
-                    .shadow(color: isHovered ? Color.accentColor.opacity(0.3) : Color.black.opacity(0.2), radius: isHovered ? 12 : 6, y: 4)
+                    .shadow(color: isHovered ? Color.accentColor.opacity(0.35) : Color.black.opacity(0.2), radius: isHovered ? 12 : 5, y: 3)
 
                     // Running indicator or Quick Play button on hover
                     if isRunning {
@@ -111,6 +120,25 @@ public struct GameCardView: View {
         .onHover { hovering in
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                 isHovered = hovering
+            }
+        }
+        .contextMenu {
+            Button(action: onPlay) {
+                Label("Spielen", systemImage: "play.fill")
+            }
+
+            Button(action: onPlayWithHUD) {
+                Label("Mit Metal HUD starten", systemImage: "gauge.with.needle")
+            }
+
+            Divider()
+
+            Button(action: onRevealInFinder) {
+                Label("Im Finder anzeigen", systemImage: "folder")
+            }
+
+            Button(action: onOpenStore) {
+                Label("Im Steam Store ansehen", systemImage: "safari")
             }
         }
     }

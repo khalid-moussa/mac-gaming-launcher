@@ -44,14 +44,43 @@ public final class SteamService: @unchecked Sendable {
                 let cleanWinPath = winPath.replacingOccurrences(of: "\\\\", with: "/").replacingOccurrences(of: "\\", with: "/")
                 var localURL: URL?
 
-                if cleanWinPath.lowercased().hasPrefix("c:/") {
-                    let relative = String(cleanWinPath.dropFirst(3))
-                    localURL = bottle.path.appendingPathComponent("drive_c").appendingPathComponent(relative)
+                // Generic drive-letter detection: match X:/ where X is a single letter
+                let lower = cleanWinPath.lowercased()
+                if lower.count >= 3,
+                   let firstChar = lower.first, firstChar.isLetter,
+                   lower.dropFirst().hasPrefix(":/") {
+                    let driveLetter = String(firstChar)                 // e.g. "c"
+                    let relative = String(cleanWinPath.dropFirst(3))    // path after X:/
+
+                    // 1. CrossOver convention: drive_c, drive_d, etc.
+                    let driveDir = "drive_\(driveLetter)"
+                    let crossOverURL = bottle.path
+                        .appendingPathComponent(driveDir)
+                        .appendingPathComponent(relative)
+                    if fileManager.fileExists(atPath: crossOverURL.path) {
+                        localURL = crossOverURL
+                    } else {
+                        // 2. Wine / GPTK convention: dosdevices/x:
+                        let dosdevicesURL = bottle.path
+                            .appendingPathComponent("dosdevices")
+                            .appendingPathComponent("\(driveLetter):")
+                            .appendingPathComponent(relative)
+                        if fileManager.fileExists(atPath: dosdevicesURL.path) {
+                            localURL = dosdevicesURL
+                        }
+                        // else: no mapping found – localURL stays nil and entry is skipped
+                    }
                 }
 
                 if let localURL = localURL {
-                    let extraSteamApps = localURL.appendingPathComponent("steamapps")
-                    if extraSteamApps != steamAppsDir && fileManager.fileExists(atPath: extraSteamApps.path) {
+                    let standardized = localURL.standardizedFileURL
+                    let bottleStandardized = bottle.path.standardizedFileURL
+                    // Path-traversal guard: ensure destination resolves within the bottle or is a validated directory
+                    let isWithinBottle = standardized.path.hasPrefix(bottleStandardized.path)
+                    let extraSteamApps = standardized.appendingPathComponent("steamapps")
+                    if (isWithinBottle || fileManager.fileExists(atPath: extraSteamApps.path))
+                        && extraSteamApps != steamAppsDir
+                        && fileManager.fileExists(atPath: extraSteamApps.path) {
                         games.append(contentsOf: scanDirectory(extraSteamApps, bottle: bottle))
                     }
                 }

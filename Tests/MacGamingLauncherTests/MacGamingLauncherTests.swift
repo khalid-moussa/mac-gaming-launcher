@@ -66,11 +66,22 @@ struct DiscoveryTests {
     @Test("Discover local engines")
     func testEngineDiscovery() {
         let engines = EngineService.shared.discoverEngines()
-        // Should find CrossOver on this machine
-        #expect(!engines.isEmpty)
+        // If engines are present on this machine, verify required features
         if let first = engines.first {
             #expect(first.hasMSync == true)
             #expect(first.hasD3DMetal == true)
         }
+    }
+}
+
+@Suite("PlaytimeTracker Tests")
+struct PlaytimeTrackerTests {
+
+    @Test("Format playtime strings")
+    func testPlaytimeFormatting() {
+        let tracker = PlaytimeTracker.shared
+        // Default formatted string for non-played game
+        let formatted = tracker.formattedPlaytime(appId: "nonexistent_app_id_999999")
+        #expect(formatted == "Weniger als 1 Minute")
     }
 }

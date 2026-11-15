@@ -50,17 +50,19 @@ public final class EngineService: @unchecked Sendable {
             }
         }
 
-        // 2. Apple Game Porting Toolkit standalone / Homebrew
+        // 2. Apple Game Porting Toolkit standalone, Homebrew (Apple Silicon / Intel) or DMG install
         let gptkPaths = [
+            URL(fileURLWithPath: "/opt/homebrew/opt/game-porting-toolkit/bin/wine64"),
             URL(fileURLWithPath: "/opt/game-porting-toolkit/bin/wine64"),
-            URL(fileURLWithPath: "/usr/local/opt/game-porting-toolkit/bin/wine64")
+            URL(fileURLWithPath: "/usr/local/opt/game-porting-toolkit/bin/wine64"),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("game-porting-toolkit/bin/wine64")
         ]
 
         for wineURL in gptkPaths {
             if fileManager.fileExists(atPath: wineURL.path) {
                 let serverURL = wineURL.deletingLastPathComponent().appendingPathComponent("wineserver")
                 let engine = Engine(
-                    name: "Apple Game Porting Toolkit (Evaluation)",
+                    name: "Apple Game Porting Toolkit (Evaluation / GPTK 2 & 4)",
                     type: .appleGPTK,
                     appBundleURL: nil,
                     wineExecutableURL: wineURL,
@@ -68,6 +70,56 @@ public final class EngineService: @unchecked Sendable {
                     version: "GPTK 4 / Metal 4",
                     hasD3DMetal: true,
                     hasMSync: true
+                )
+                engines.append(engine)
+                break
+            }
+        }
+
+        // 3. Whisky (GPTK + MSync)
+        let whiskyAppPaths = [
+            URL(fileURLWithPath: "/Applications/Whisky.app"),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Whisky.app")
+        ]
+
+        for appURL in whiskyAppPaths {
+            let wineURL = appURL.appendingPathComponent("Contents/Resources/Libraries/Wine/bin/wine64")
+            let serverURL = appURL.appendingPathComponent("Contents/Resources/Libraries/Wine/bin/wineserver")
+
+            if fileManager.fileExists(atPath: wineURL.path) {
+                let engine = Engine(
+                    name: "Whisky (GPTK + MSync)",
+                    type: .whisky,
+                    appBundleURL: appURL,
+                    wineExecutableURL: wineURL,
+                    wineServerExecutableURL: serverURL,
+                    version: "Whisky GPTK",
+                    hasD3DMetal: true,
+                    hasMSync: true
+                )
+                engines.append(engine)
+                break
+            }
+        }
+
+        // 4. Custom Wine / Homebrew Wine
+        let customWinePaths = [
+            URL(fileURLWithPath: "/opt/homebrew/bin/wine64"),
+            URL(fileURLWithPath: "/usr/local/bin/wine64")
+        ]
+
+        for wineURL in customWinePaths {
+            if fileManager.fileExists(atPath: wineURL.path) {
+                let serverURL = wineURL.deletingLastPathComponent().appendingPathComponent("wineserver")
+                let engine = Engine(
+                    name: "Wine64 (Homebrew / System)",
+                    type: .customWine,
+                    appBundleURL: nil,
+                    wineExecutableURL: wineURL,
+                    wineServerExecutableURL: serverURL,
+                    version: "Wine-Standalone",
+                    hasD3DMetal: false,
+                    hasMSync: false
                 )
                 engines.append(engine)
                 break

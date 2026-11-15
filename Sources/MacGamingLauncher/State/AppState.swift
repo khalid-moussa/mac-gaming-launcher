@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Observation
+import AppKit
 
 public enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     case all = "Alle Spiele"
@@ -64,32 +65,50 @@ public final class AppState {
         isLoading = true
         statusMessage = "Erkenne Engines und Bottles..."
 
-        Task { @MainActor in
-            self.engines = EngineService.shared.discoverEngines()
-            self.selectedEngine = self.engines.first
-
-            self.bottles = BottleService.shared.discoverBottles()
-            if self.selectedBottle == nil {
-                self.selectedBottle = self.bottles.first(where: { $0.hasSteamInstalled }) ?? self.bottles.first
-            }
+        Task.detached(priority: .userInitiated) {
+            let detectedEngines = EngineService.shared.discoverEngines()
+            let detectedBottles = BottleService.shared.discoverBottles()
 
             var allGames: [SteamGame] = []
-            for bottle in self.bottles {
+            for bottle in detectedBottles {
                 let bottleGames = SteamService.shared.scanGames(in: bottle)
                 allGames.append(contentsOf: bottleGames)
             }
+            let sortedGames = allGames.sorted(by: { $0.name.lowercased() < $1.name.lowercased() })
 
-            self.games = allGames.sorted(by: { $0.name.lowercased() < $1.name.lowercased() })
-            if self.selectedGame == nil {
-                self.selectedGame = self.games.first
+            await MainActor.run {
+                self.engines = detectedEngines
+                self.selectedEngine = detectedEngines.first
+
+                self.bottles = detectedBottles
+                if self.selectedBottle == nil {
+                    self.selectedBottle = detectedBottles.first(where: { $0.hasSteamInstalled }) ?? detectedBottles.first
+                }
+
+                self.games = sortedGames
+                if self.selectedGame == nil {
+                    self.selectedGame = sortedGames.first
+                }
+
+                self.isLoading = false
+                self.statusMessage = nil
             }
-
-            self.isLoading = false
-            self.statusMessage = nil
         }
     }
 
-    public func launch(game: SteamGame) {
+    public func launchSteamClient(bottle: Bottle) {
+        guard let engine = selectedEngine ?? engines.first else {
+            statusMessage = "Keine Wine/GPTK Engine gefunden!"
+            return
+        }
+        do {
+            try GameRunner.shared.launchSteamClient(bottle: bottle, engine: engine)
+        } catch {
+            statusMessage = "Fehler beim Starten von Steam: \(error.localizedDescription)"
+        }
+    }
+
+    public func launch(game: SteamGame, overrideHUD: Bool? = nil) {
         guard let engine = selectedEngine ?? engines.first else {
             statusMessage = "Keine Wine/GPTK Engine gefunden!"
             return
@@ -103,7 +122,12 @@ public final class AppState {
         runningGameIDs.insert(game.appId)
 
         do {
-            try GameRunner.shared.launchGame(game: game, bottle: bottle, engine: engine) { [weak self] in
+            try GameRunner.shared.launchGame(
+                game: game,
+                bottle: bottle,
+                engine: engine,
+                overrideHUD: overrideHUD
+            ) { [weak self] in
                 Task { @MainActor in
                     self?.runningGameIDs.remove(game.appId)
                 }
@@ -126,6 +150,57 @@ public final class AppState {
         }
         if selectedBottle?.name == updated.name {
             selectedBottle = updated
+        }
+    }
+
+    public func playtime(for game: SteamGame) -> String {
+        PlaytimeTracker.shared.formattedPlaytime(appId: game.appId)
+    }
+
+    public func revealInFinder(bottle: Bottle) {
+        NSWorkspace.shared.activateFileViewerSelecting([bottle.path])
+    }
+
+    public func revealInFinder(game: SteamGame) {
+        let gameFolder = game.bottlePath.appendingPathComponent("drive_c/Program Files (x86)/Steam/steamapps/common").appendingPathComponent(game.installDir)
+        if FileManager.default.fileExists(atPath: gameFolder.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([gameFolder])
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([game.bottlePath])
+        }
+    }
+
+    public func openSteamStore(game: SteamGame) {
+        if let url = URL(string: "https://store.steampowered.com/app/\(game.appId)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    public func runCustomExecutable(in bottle: Bottle) {
+        guard let engine = selectedEngine ?? engines.first else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = []
+        panel.message = "Wähle eine Windows .exe-Datei zum Ausführen im Bottle '\(bottle.name)'"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try GameRunner.shared.launchCustomExecutable(exeURL: url, bottle: bottle, engine: engine)
+            } catch {
+                statusMessage = "Fehler: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func openWineCfg(in bottle: Bottle) {
+        guard let engine = selectedEngine ?? engines.first else { return }
+        do {
+            try GameRunner.shared.launchWineCfg(bottle: bottle, engine: engine)
+        } catch {
+            statusMessage = "Fehler: \(error.localizedDescription)"
         }
     }
 }

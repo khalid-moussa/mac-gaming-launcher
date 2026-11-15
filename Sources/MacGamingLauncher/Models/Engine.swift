@@ -2,7 +2,8 @@ import Foundation
 
 public enum EngineType: String, Sendable, CaseIterable {
     case crossOver = "CrossOver (GPTK / Wine-CX)"
-    case appleGPTK = "Apple Game Porting Toolkit 4"
+    case appleGPTK = "Apple Game Porting Toolkit (GPTK 2 & 4)"
+    case whisky = "Whisky (GPTK)"
     case customWine = "Custom Wine / Kegworks"
 }
 

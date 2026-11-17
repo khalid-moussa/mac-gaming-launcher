@@ -1,25 +1,40 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.4
 import PackageDescription
 
 let package = Package(
     name: "MacGamingLauncher",
+    defaultLocalization: "de",
     platforms: [
-        .macOS(.v14)
+        // macOS 27 is required for Game Porting Toolkit 4 / D3DMetal 4 (Metal 4).
+        .macOS(.v27)
     ],
     products: [
-        .executable(
-            name: "MacGamingLauncher",
-            targets: ["MacGamingLauncher"]
-        )
+        .executable(name: "MacGamingLauncher", targets: ["MacGamingLauncher"])
     ],
     targets: [
+        // Platform logic: runtime install, bottles, Wine invocation, Steam integration.
+        // No UI, no global singletons — everything takes its dependencies explicitly so it is testable.
+        // Async functions here intentionally run on the global executor (not the caller's actor), so file copies,
+        // downloads and process polling never block the main thread.
+        .target(
+            name: "LauncherCore",
+            swiftSettings: [
+                .enableUpcomingFeature("InferIsolatedConformances"),
+            ]
+        ),
+        // SwiftUI app. Main-actor by default, as UI code should be.
         .executableTarget(
             name: "MacGamingLauncher",
-            path: "Sources/MacGamingLauncher"
+            dependencies: ["LauncherCore"],
+            swiftSettings: [
+                .defaultIsolation(MainActor.self),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .enableUpcomingFeature("InferIsolatedConformances"),
+            ]
         ),
         .testTarget(
-            name: "MacGamingLauncherTests",
-            dependencies: ["MacGamingLauncher"]
+            name: "LauncherCoreTests",
+            dependencies: ["LauncherCore"]
         ),
     ]
 )

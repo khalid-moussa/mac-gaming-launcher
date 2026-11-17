@@ -1,96 +1,84 @@
-# Mac Gaming Launcher 🎮🍎
+# Mac Gaming Launcher
 
-Ein nativer, performanter macOS Spiele-Launcher für Apple Silicon (M1 bis M4), der Windows Steam-Spiele über **Apples Game Porting Toolkit (GPTK 2 & 4 / Metal 4)**, **Whisky** und die bewährte **CrossOver / Wine-CX Architektur** mit nativer macOS SwiftUI-Benutzeroberfläche ausführt.
+Ein nativer SwiftUI-Launcher für macOS 27 auf Apple Silicon. Er richtet eine Windows-Umgebung mit Steam ein und startet deine Windows-Spiele per Klick. Das Prinzip entspricht CrossOver und Whisky: Wine übersetzt Windows-Aufrufe, Rosetta 2 den x86-Code, und DXMT, DXVK oder Apples **D3DMetal (Game Porting Toolkit 4)** übersetzen DirectX nach Metal.
 
----
+> Die Spiele laufen übersetzt, nicht nativ. Titel mit Kernel-Anti-Cheat (Valorant, Fortnite, Call of Duty, viele Battle-Royale-Spiele) funktionieren unter Wine nicht.
 
-## Highlights & Features
+## Funktionen
 
-* **100 % Nativ für macOS & Apple Silicon**:
-  * Gebaut mit modernem **Swift 6 & SwiftUI** (unter Beachtung der Apple Human Interface Guidelines).
-  * Volle Ausnutzung von ARM64, Rosetta 2 und **AVX2-Instruktionen** (`ROSETTA_ADVERTISE_AVX=1`).
-* **Apple D3DMetal & Metal 4 Translation Layer**:
-  * Hardwarebeschleunigte Übersetzung von DirectX 11 & DirectX 12 direkt in Apples Metal API (inkl. Ray Tracing Translation).
-  * Umschaltbares **Metal Performance HUD** (Live-FPS, Frame Times, GPU-Auslastung).
-  * Optionale Aktivierung von **MetalFX Upscaling** und **Retina / HiDPI-Modus**.
-* **CrossOver-Engine, Whisky & MSync Integration**:
-  * Nutzt **MSync** (Darwin Mach-Kernel Semaphore) für ruckelfreies Windows Multi-Threading ohne CPU-Overhead.
-  * Automatische Erkennung vorhandener CrossOver-Installationen, Whisky und GPTK-Toolchains (Homebrew Apple Silicon `/opt/homebrew` & Standalone).
-* **Intelligente Steam-Erkennung (`SteamBridge`)**:
-  * Liest `libraryfolders.vdf` (inkl. beliebiger Laufwerks-Buchstaben wie `D:/`, `E:/`) und `appmanifest_*.acf` aus Windows-Bottles direkt aus.
-  * Lädt automatisch hochauflösende 2x Vertical Posters (600x900) und Landscape Hero Banner vom offiziellen Steam CDN.
-  * Startet Spiele direkt per One-Click ohne vorherigen Start der schweren Windows-Steam-Oberfläche.
-* **Game Controller & Spielzeit-Tracking**:
-  * Nativer GameController-Support (DualSense, Xbox, MFi) mit Live-Akkustandsanzeige in der Toolbar.
-  * Persistentes Spielzeit-Tracking mit automatischer Sicherung bei App-Beendigung.
+- **Einrichtungsassistent:** Rosetta → Wine-Runtime → Bottle → Steam → Anmeldung.
+- **Verwaltete Runtime:**
+  - Wine 11 auf CrossOver-Basis mit DXMT und DXVK, aus dem aktiv gepflegten Whisky-Fork [frankea/Whisky](https://github.com/frankea/Whisky).
+  - Der Download wird per SHA-256 geprüft, danach installiert der Launcher die Runtime atomar. Updates erkennt er über den Versionskanal.
+- **Game Porting Toolkit 3/4:**
+  - Du importierst die `.dmg` von Apple, das enthaltene Evaluation-Image oder die `Game Porting Toolkit.app`. Der Launcher bindet D3DMetal dann in die Runtime ein.
+  - Mit GPTK 4 auf macOS 27 ist der Metal-4-Pfad aktiv (`D3DM_MTL4`). Das MetalFX-Upscaling für DLSS-Spiele lässt sich einschalten.
+- **Steam:** Der Launcher installiert den offiziellen Client still (`SteamSetup.exe /S`). Du meldest dich im Steam-Fenster an, danach erscheinen Konto und Bibliothek automatisch.
+  - Der Steam-Client läuft auf DXVK, weil die Chromium-Oberfläche das braucht.
+  - Spiele nutzen das Backend des Bottles. Das wird pro Programm über `AppDefaults`-DLL-Overrides in der Registry gesteuert, nicht über `WINEDLLOVERRIDES`.
+- **Spielsitzungen:** Der Launcher erkennt den laufenden Spielprozess (nicht nur den Steam-Aufruf), zeigt den Status „Läuft“ an und erfasst die Spielzeit. „Beenden“ beendet das Spiel tatsächlich.
+- **CrossOver-Bottles** werden erkannt und mit CrossOver gestartet (`wine --bottle … --cx-app …`).
+- **Pro Bottle einstellbar:**
+  - Grafik-Backend (Automatisch, D3DMetal, DXMT, DXVK, WineD3D)
+  - MSync, AVX über Rosetta, Metal HUD, MetalFX, Retina, Windows-Version
+- Controller-Anzeige mit Akkustand; jedes Bottle schreibt ein eigenes Log nach `~/Library/Logs/MacGamingLauncher/`.
 
----
+## Voraussetzungen
 
-## Projektstruktur
+- Apple Silicon, macOS 27 oder neuer, Xcode 27 (Swift 6.4)
+- Etwa 3 GB freier Speicher plus Platz für die Spiele
 
-```
-MacGamingLauncher/
-├── Package.swift                             # Swift Package Manager Konfiguration
-├── scripts/
-│   ├── build_app.sh                          # Erstellt das fertige macOS .app Bundle
-│   └── generate_icon.swift                   # Generiert das High-Res App-Icon
-├── Sources/
-│   └── MacGamingLauncher/
-│       ├── App/
-│       │   ├── MacGamingLauncherApp.swift    # @main SwiftUI App-Einstiegspunkt
-│       │   └── AppDelegate.swift             # macOS Fenster- und Lifecycle-Handling (Playtime-Flush)
-│       ├── Models/
-│       │   ├── SteamGame.swift               # Datenmodell für Steam-Titel (AppID, Pfade, CDN-URLs)
-│       │   ├── Bottle.swift                  # Bottle-Konfiguration (MSync, D3DMetal, HUD, Retina)
-│       │   └── Engine.swift                  # Erkannte GPTK / Whisky / CrossOver Runtimes
-│       ├── Services/
-│       │   ├── VDFParser.swift               # Robuster Valve KeyValues / VDF Parser
-│       │   ├── SteamService.swift            # Scannt Bottles & extrahiert Spielemetadaten
-│       │   ├── BottleService.swift           # Verwaltet Bottles & cxbottle.conf Persistierung
-│       │   ├── EngineService.swift           # Findet installierte Runtimes (CrossOver, GPTK 2/4, Whisky)
-│       │   ├── GameRunner.swift              # Startet Wine-Prozesse mit GPTK/AVX2 Environment
-│       │   ├── PlaytimeTracker.swift         # Erfasst und formatiert Spielzeiten atomar
-│       │   └── ControllerService.swift       # GameController Framework Observer & Batteriestatus
-│       ├── State/
-│       │   └── AppState.swift                # Zentrales SwiftUI State-Management (Background-Discovery)
-│       └── Views/
-│           ├── MainView.swift                # NavigationSplitView (Sidebar + Grid + Details)
-│           ├── SidebarView.swift             # Bibliotheksfilter & Bottles-Navigation
-│           ├── GameGridView.swift            # Animiertes Spielkarten-Grid
-│           ├── GameCardView.swift            # 600x900 Poster-Karte mit Hover-Glow
-│           └── GameDetailView.swift          # Hero-Banner, Statistiken, Retina & Performance-Toggles
-└── Tests/
-    └── MacGamingLauncherTests/
-        └── MacGamingLauncherTests.swift      # Unit-Tests für VDF-Parser, Bottles & Discovery
-```
-
----
-
-## Schnellstart & Build
-
-### 1. Als native App bauen (.app Bundle)
-Führe das Build-Skript im Terminal aus:
+## Bauen und Starten
 
 ```bash
-./scripts/build_app.sh
-```
-
-Das fertige Bundle liegt anschließend unter:
-`build/MacGamingLauncher.app`
-
-Öffne die App direkt:
-```bash
+./scripts/build_app.sh                 # erzeugt build/MacGamingLauncher.app
 open build/MacGamingLauncher.app
+
+swift test                             # Unit-Tests (Swift Testing)
+swift run MacGamingLauncher            # Debug-Start
 ```
 
-### 2. Für Entwickler (Xcode oder CLI)
-* **Unit-Tests ausführen:**
-  ```bash
-  swift test
-  ```
-* **Debug-Build ausführen:**
-  ```bash
-  swift run
-  ```
-* **In Xcode öffnen:**
-  Öffne einfach den gesamten Ordner `AppleGaming` in Xcode.
+## D3DMetal (Game Porting Toolkit 4) einrichten
+
+1. Lade das Game Porting Toolkit auf [developer.apple.com/games/game-porting-toolkit](https://developer.apple.com/games/game-porting-toolkit/) herunter. Dafür reicht ein kostenloses Entwicklerkonto.
+2. Öffne im Launcher **Einstellungen → Apple Game Porting Toolkit → GPTK-.dmg importieren …**.
+3. Im Bottle steht das Grafik-Backend auf **Automatisch**, damit nutzt es jetzt D3DMetal. Starte Steam einmal neu.
+
+Apple erlaubt keine Weitergabe von D3DMetal. Deshalb liefert der Launcher es nicht mit, sondern du importierst es selbst.
+
+## Nativer Steam-Client für macOS (optional)
+
+Ist zusätzlich der normale Steam-Client für macOS installiert (`/Applications/Steam.app`), zeigt der Launcher auch dessen Bibliothek an. Diese Spiele sind mit „Steam (macOS)“ gekennzeichnet und werden über `steam://rungameid/<id>` an diesen Client übergeben. Die Spielzeit wird trotzdem erfasst. Das betrifft echte Mac-Spiele und, falls [NotProton](https://github.com/NotProtonNot/NotProton) eingerichtet ist, auch Windows-Spiele, die der Mac-Client per Steam Play über CrossOver startet. Der Launcher liest diese Bibliothek nur und verändert den Mac-Client nicht.
+
+## Aufbau
+
+```text
+Sources/
+├── LauncherCore/          # Plattformlogik, ohne UI, getestet
+│   ├── Runtime/           # Runtime-Download und -Installation, D3DMetal-Import, Engine-Erkennung
+│   ├── Bottles/           # Bottles erstellen, bottle.json, cxbottle.conf (abschnittsweise)
+│   ├── Wine/              # Umgebung, Aufrufe, Grafik-Plan (DLL-Overrides, DXMT/DXVK), .reg-Import
+│   ├── Steam/             # Bibliothek/ACF, Konten, Installation und Steuerung des Clients, Spielerkennung
+│   ├── Process/           # Prozessstart ohne blockierende Pipes, Prozessliste über sysctl
+│   ├── VDF/               # Parser für Valve KeyValues
+│   └── Support/           # Pfade, Logging, Spielzeit
+└── MacGamingLauncher/     # SwiftUI-App (Main-Actor als Standard)
+    ├── Model/AppModel.swift
+    └── Views/             # Sidebar, Bibliothek, Detailseite, Einrichtung, Einstellungen
+```
+
+## Datenablage
+
+| Was | Wo |
+| --- | --- |
+| Runtime, Bottles, Spielzeit | `~/Library/Application Support/MacGamingLauncher/` |
+| Importiertes D3DMetal | `~/Library/Application Support/MacGamingLauncher/D3DMetal/` |
+| Logs | `~/Library/Logs/MacGamingLauncher/` |
+| Artwork-Cache | `~/Library/Caches/MacGamingLauncher/` |
+
+## Fehlersuche
+
+- **Das Steam-Fenster bleibt schwarz:** Beende Steam über das Bottle-Menü („Steam beenden“) und öffne es wieder, oder nutze in den Bottle-Einstellungen „Sichern & Steam neu starten“. Hilft das nicht, trage in den Bottle-Einstellungen unter „Zusätzliche Steam-Argumente“ den Wert `-cef-disable-gpu` ein.
+- **Das Spiel wird nicht erkannt:** Steam zeigt dann oft ein Fenster an, zum Beispiel für ein Update, eine EULA oder den Cloud-Sync. Bestätige es dort. Weitere Hinweise stehen im Log des Bottles.
+- **Ein DirectX-12-Spiel startet nicht:** Importiere D3DMetal (siehe oben).
+- **Runtime-Probleme:** Installiere die Runtime unter **Einstellungen → Wine-Runtime** neu.

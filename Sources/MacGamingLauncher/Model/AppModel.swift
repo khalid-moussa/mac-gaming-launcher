@@ -246,18 +246,22 @@ final class AppModel {
         }
     }
 
-    func checkForRuntimeUpdate() async {
-        guard activity == nil else { return }
+    /// Returns whether the channel could be checked.
+    @discardableResult
+    func checkForRuntimeUpdate() async -> Bool {
+        guard activity == nil else { return false }
         do {
             let release = try await RuntimeInstaller(paths: paths).fetchLatestRelease()
-            guard activity == nil else { return } // an install finished meanwhile; its result wins
+            guard activity == nil else { return false } // an install finished meanwhile; its result wins
             if let installed = runtimeVersion, !RuntimeInstaller.isNewer(release.version, than: installed) {
                 availableRuntime = nil
             } else {
                 availableRuntime = release
             }
+            return true
         } catch {
             Log.runtime.error("Update-Prüfung fehlgeschlagen: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 

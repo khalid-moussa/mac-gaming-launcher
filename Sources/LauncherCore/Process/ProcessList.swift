@@ -38,10 +38,11 @@ public enum ProcessList {
 
     /// Processes belonging to a given Wine prefix.
     public static func wineProcesses(inPrefix prefix: URL, from processes: [RunningProcess]? = nil) -> [RunningProcess] {
-        let target = prefix.standardizedFileURL.path
+        // Resolve symlinks on both sides: CrossOver passes the unresolved path (e.g. Bottles moved to another disk).
+        let target = prefix.resolvingSymlinksInPath().standardizedFileURL.path
         return (processes ?? current()).filter { process in
             guard let winePrefix = process.winePrefix else { return false }
-            return URL(filePath: winePrefix).standardizedFileURL.path == target
+            return URL(filePath: winePrefix).resolvingSymlinksInPath().standardizedFileURL.path == target
         }
     }
 

@@ -184,27 +184,36 @@ public struct D3DMetalInstaller: Sendable {
 
         var manifest = Manifest()
         for (source, target) in dlls {
-            // After undeploy(), whatever is here is Wine's own file → it becomes the (fresh) backup.
             let destination = peDirectory.appending(path: target)
             let backup = originals.appending(path: target)
+            let relative = "wine/x86_64-windows/\(target)"
+            // Record first, so a crash mid-way is still undone by the next undeploy().
+            manifest.files[relative] = try Self.sha256(of: storePE.appending(path: source))
+            try saveManifest(manifest)
             if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: backup)
-                try fileManager.moveItem(at: destination, to: backup)
+                // Decided by content: only Wine's own DLL (builtin marker) may become the backup. Anything else is
+                // a forwarder from some earlier deployment and is simply replaced.
+                if Self.isWineBuiltin(destination) {
+                    try? fileManager.removeItem(at: backup)
+                    try fileManager.moveItem(at: destination, to: backup)
+                } else {
+                    try fileManager.removeItem(at: destination)
+                }
             }
             try fileManager.copyItem(at: storePE.appending(path: source), to: destination)
-            manifest.files["wine/x86_64-windows/\(target)"] = try Self.sha256(of: destination)
-            try saveManifest(manifest)
 
             let unixName = (target as NSString).deletingPathExtension + ".so"
             let link = unixDirectory.appending(path: unixName)
-            if Self.exists(link, fileManager) {
+            manifest.links.append("wine/x86_64-unix/\(unixName)")
+            try saveManifest(manifest)
+            if (try? fileManager.destinationOfSymbolicLink(atPath: link.path)) == Self.unixLinkDestination {
+                try fileManager.removeItem(at: link)
+            } else if Self.exists(link, fileManager) {
                 let backupSO = originals.appending(path: unixName)
                 try? fileManager.removeItem(at: backupSO)
                 try fileManager.moveItem(at: link, to: backupSO)
             }
             try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: Self.unixLinkDestination)
-            manifest.links.append("wine/x86_64-unix/\(unixName)")
-            try saveManifest(manifest)
         }
 
         let external = wineLib.appending(path: "external")
@@ -219,32 +228,28 @@ public struct D3DMetalInstaller: Sendable {
         Log.runtime.info("D3DMetal in Runtime eingebunden")
     }
 
-    /// Undoes the recorded deployment and restores Wine's originals. Files that no longer match what we deployed
-    /// (a runtime update put fresh Wine files there) are left alone and their stale backups dropped.
+    /// Undoes a deployment and restores Wine's originals. Whether a file is ours is decided by content: Wine's own
+    /// D3D DLLs carry the "Wine builtin DLL" marker, Apple's forwarders (of any GPTK version) don't. A Wine file in
+    /// place means a runtime update put fresh files there; then the old backup is stale and dropped.
     func undeploy() throws {
         let fileManager = FileManager.default
-        let storePE = storeLib.appending(path: "wine/x86_64-windows")
-        // Without a manifest (older versions), fall back to comparing with the store.
         let manifest = loadManifest() ?? Manifest(
-            files: Dictionary(uniqueKeysWithValues: (Self.forwarderDLLs + [Self.metalFXName, Self.nvapiName]).compactMap { name in
-                let store = storePE.appending(path: name == Self.metalFXName ? Self.metalFXSource : name)
-                return (try? Self.sha256(of: store)).map { ("wine/x86_64-windows/\(name)", $0) }
-            }),
-            links: Self.unixLibraries.map { "wine/x86_64-unix/\($0)" } + ["wine/x86_64-unix/nvngx.so", "wine/x86_64-unix/nvapi64.so"],
+            // Older versions wrote no manifest (or it is unreadable): check every file a deployment can touch.
+            files: Dictionary(uniqueKeysWithValues: (Self.forwarderDLLs + [Self.metalFXName, Self.nvapiName]).map { ("wine/x86_64-windows/\($0)", "") }),
+            links: (Self.forwarderDLLs + [Self.metalFXName, Self.nvapiName]).map { "wine/x86_64-unix/" + ($0 as NSString).deletingPathExtension + ".so" },
             external: ["external/libd3dshared.dylib", "external/D3DMetal.framework"]
         )
 
-        for (relative, hash) in manifest.files {
+        for relative in manifest.files.keys {
             let destination = wineLib.appending(path: relative)
             let backup = originals.appending(path: destination.lastPathComponent)
             let present = fileManager.fileExists(atPath: destination.path)
-            let ours = present && (try? Self.sha256(of: destination)) == hash
-            if ours || !present {
-                if present { try fileManager.removeItem(at: destination) }
-                if fileManager.fileExists(atPath: backup.path) { try fileManager.moveItem(at: backup, to: destination) }
-            } else {
-                try? fileManager.removeItem(at: backup) // Wine's newer file stays; old backup is stale.
+            if present, Self.isWineBuiltin(destination) {
+                try? fileManager.removeItem(at: backup) // Wine's (possibly newer) file stays; old backup is stale.
+                continue
             }
+            if present { try fileManager.removeItem(at: destination) }
+            if fileManager.fileExists(atPath: backup.path) { try fileManager.moveItem(at: backup, to: destination) }
         }
         for relative in manifest.links {
             let link = wineLib.appending(path: relative)
@@ -268,6 +273,14 @@ public struct D3DMetalInstaller: Sendable {
         if FileManager.default.fileExists(atPath: wineLib.path) { try undeploy() }
         // Only after every restore succeeded: the store holds the backups.
         try? FileManager.default.removeItem(at: paths.d3dMetalStore)
+    }
+
+    /// Wine's PE DLLs carry "Wine builtin DLL" at offset 0x40; Apple's forwarders don't.
+    static func isWineBuiltin(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: 0x40)) != nil, let bytes = try? handle.read(upToCount: 16) else { return false }
+        return Array(bytes) == GraphicsPlan.builtinMarker
     }
 
     static func exists(_ url: URL, _ fileManager: FileManager) -> Bool {

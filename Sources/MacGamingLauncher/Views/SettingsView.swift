@@ -5,7 +5,7 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var importing = false
     @State private var checking = false
-    @State private var upToDate = false
+    @State private var checkResult: String?
 
     var body: some View {
         Form {
@@ -22,16 +22,22 @@ struct SettingsView: View {
                     Button("Nach Updates suchen") {
                         Task {
                             checking = true
-                            await model.checkForRuntimeUpdate()
+                            let checked = await model.checkForRuntimeUpdate()
                             checking = false
-                            upToDate = model.runtimeVersion != nil && model.availableRuntime == nil
+                            if !checked {
+                                checkResult = "Prüfung fehlgeschlagen"
+                            } else if model.availableRuntime == nil, model.runtimeVersion != nil {
+                                checkResult = "Aktuell"
+                            } else {
+                                checkResult = nil
+                            }
                         }
                     }
                     .disabled(model.activity != nil || checking)
                     if checking {
                         ProgressView().controlSize(.small)
-                    } else if upToDate {
-                        Label("Aktuell", systemImage: "checkmark").foregroundStyle(.secondary)
+                    } else if let checkResult {
+                        Text(checkResult).foregroundStyle(.secondary)
                     }
                 }
                 Text("Quelle: frankea/Whisky (Wine 11 auf CrossOver-Basis, LGPL). Läuft über Rosetta 2.")

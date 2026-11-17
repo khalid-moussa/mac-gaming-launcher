@@ -291,3 +291,44 @@ struct ReviewRegressionTests {
         #expect(library.macPath(forWindowsPath: #"d:\Lib"#)?.path == external.appending(path: "Lib").standardizedFileURL.path)
     }
 }
+
+@Suite("D3DMetal legacy and crash safety")
+struct D3DMetalLegacyTests {
+    /// A deployment from before the manifest existed, then a re-import of another build, then remove.
+    @Test func legacyDeployThenReimportKeepsWineOriginal() throws {
+        let fx = try RuntimeFixture()
+        defer { fx.cleanup() }
+        let installer = D3DMetalInstaller(paths: fx.paths)
+        _ = try installer.copyToStore(try fx.payload("4.0b1"))
+        try installer.deploy()
+        try FileManager.default.removeItem(at: installer.manifestFile) // as written by launcher builds before the manifest
+
+        _ = try installer.copyToStore(try fx.payload("4.0b2"))
+        try installer.deploy()
+        let backup = fx.paths.d3dMetalStore.appending(path: "originals/dxgi.dll")
+        #expect(fx.read(backup)?.hasSuffix("WINE1-dxgi.dll") == true)
+
+        try FileManager.default.removeItem(at: installer.manifestFile)
+        try installer.remove()
+        for name in ["d3d10.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll"] {
+            #expect(fx.read(fx.pe.appending(path: name))?.hasSuffix("WINE1-\(name)") == true, "\(name)")
+        }
+        #expect(!FileManager.default.fileExists(atPath: fx.pe.appending(path: "nvngx.dll").path))
+    }
+
+    /// Crash after the forwarder was copied but before anything else was recorded: the next deploy must not
+    /// mistake the forwarder for Wine's original.
+    @Test func crashAfterCopyBeforeManifestSave() throws {
+        let fx = try RuntimeFixture()
+        defer { fx.cleanup() }
+        let installer = D3DMetalInstaller(paths: fx.paths)
+        _ = try installer.copyToStore(try fx.payload("4.0b1"))
+        try installer.deploy()
+        try installer.saveManifest(.init()) // lost track of everything
+        try installer.deploy()
+        let backup = fx.paths.d3dMetalStore.appending(path: "originals/dxgi.dll")
+        #expect(fx.read(backup)?.hasSuffix("WINE1-dxgi.dll") == true)
+        try installer.remove()
+        #expect(fx.read(fx.pe.appending(path: "dxgi.dll"))?.hasSuffix("WINE1-dxgi.dll") == true)
+    }
+}

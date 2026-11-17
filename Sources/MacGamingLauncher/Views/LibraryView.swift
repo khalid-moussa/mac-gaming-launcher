@@ -39,8 +39,7 @@ struct LibraryView: View {
     @ViewBuilder private var emptyState: some View {
         if !model.searchText.isEmpty {
             ContentUnavailableView.search(text: model.searchText)
-        } else if model.games.isEmpty || model.selection == .library(.installed),
-                  let bottle = emptyStateBottle, model.steamInstalled.contains(bottle.id) {
+        } else if showsInstallPrompt, let bottle = emptyStateBottle, model.steamInstalled.contains(bottle.id) {
             ContentUnavailableView {
                 Label("Noch keine Spiele installiert", systemImage: "gamecontroller")
             } description: {
@@ -56,6 +55,12 @@ struct LibraryView: View {
                 ? "Hier erscheinen Spiele, sobald du sie über den Launcher gespielt hast."
                 : "Für diesen Filter gibt es keine Spiele."))
         }
+    }
+
+    /// "Install games in Steam" fits when there are no games at all, nothing installed, or an empty bottle is selected.
+    private var showsInstallPrompt: Bool {
+        if case .bottle = model.selection { return true }
+        return model.games.isEmpty || model.selection == .library(.installed)
     }
 
     /// The selected bottle, else the primary one.
@@ -89,8 +94,9 @@ struct GameCard: View {
                     .padding(10)
             }
             .contentShape(.rect)
-            .onTapGesture { model.selectedGameID = game.id }
+            // The double tap must be declared first, or the single tap always wins.
             .onTapGesture(count: 2) { if game.isFullyInstalled, model.activity == nil { model.launch(game) } }
+            .onTapGesture { model.selectedGameID = game.id }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(game.name).font(.headline).lineLimit(1)

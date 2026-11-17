@@ -28,10 +28,10 @@ public struct GameMonitor: Sendable {
     /// (the launcher's own bottles) are never attributed to it.
     public init(macGame game: SteamGame, executableNames: Set<String>, excludedPrefixes: [URL] = []) {
         let names = executableNames.subtracting(GraphicsPlan.steamExecutables)
-        let excluded = Set(excludedPrefixes.map { $0.standardizedFileURL.path })
+        let excluded = Set(excludedPrefixes.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
         match = { snapshot in
             MacSteamLibrary.runningProcesses(of: game, executableNames: names, snapshot: snapshot).filter { process in
-                process.winePrefix.map { !excluded.contains(URL(filePath: $0).standardizedFileURL.path) } ?? true
+                process.winePrefix.map { !excluded.contains(URL(filePath: $0).resolvingSymlinksInPath().standardizedFileURL.path) } ?? true
             }
         }
     }

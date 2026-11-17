@@ -1,290 +1,134 @@
+import LauncherCore
 import SwiftUI
 
-public struct GameDetailView: View {
-    @Bindable var state: AppState
+struct GameDetailView: View {
+    @Environment(AppModel.self) private var model
     let game: SteamGame
 
-    var bottle: Bottle? {
-        state.bottles.first(where: { $0.name == game.bottleName })
-    }
-
-    var isRunning: Bool {
-        state.runningGameIDs.contains(game.appId)
-    }
-
-    public var body: some View {
+    var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // Hero Banner
-                ZStack(alignment: .bottomLeading) {
-                    AsyncImage(url: game.heroURL ?? game.headerURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .aspectRatio(16/9, contentMode: .fill)
-                                .frame(height: 280)
-                                .clipped()
-                        default:
-                            LinearGradient(
-                                colors: [Color.blue.opacity(0.3), Color.purple.opacity(0.4)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            .frame(height: 280)
-                        }
-                    }
-
-                    // Gradient overlay
-                    LinearGradient(
-                        colors: [.clear, Color(nsColor: .windowBackgroundColor).opacity(0.8), Color(nsColor: .windowBackgroundColor)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 180)
-
-                    // Hero Content
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(game.name)
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .foregroundColor(.primary)
-                            .shadow(radius: 8)
-
-                        HStack(spacing: 12) {
-                            // Big Action Button
-                            if isRunning {
-                                Button(action: { state.terminate(game: game) }) {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "stop.fill")
-                                        Text("Beenden")
-                                    }
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 24)
-                                    .padding(.vertical, 12)
-                                    .background(Color.red)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                    .shadow(radius: 4)
-                                }
-                                .buttonStyle(.plain)
-                            } else {
-                                Button(action: { state.launch(game: game) }) {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "play.fill")
-                                        Text("Spielen")
-                                    }
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 28)
-                                    .padding(.vertical, 12)
-                                    .background(Color.accentColor)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                    .shadow(radius: 4)
-                                }
-                                .buttonStyle(.plain)
-
-                                Button(action: { state.launch(game: game, overrideHUD: true) }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "gauge.with.needle")
-                                        Text("Mit HUD")
-                                    }
-                                    .font(.subheadline.bold())
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 12)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                                .help("Spiel mit sichtbarem Metal Performance HUD (FPS, GPU) starten")
-                            }
-
-                            // Engine / Bottle Pill
-                            HStack(spacing: 6) {
-                                Image(systemName: "cube.box")
-                                Text(game.bottleName)
-                            }
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Capsule())
-
-                            Spacer()
-
-                            // Utility buttons
-                            Button(action: { state.revealInFinder(game: game) }) {
-                                Image(systemName: "folder")
-                            }
-                            .buttonStyle(.bordered)
-                            .help("Im Finder anzeigen")
-
-                            Button(action: { state.openSteamStore(game: game) }) {
-                                Image(systemName: "safari")
-                            }
-                            .buttonStyle(.bordered)
-                            .help("Im Steam Store ansehen")
-                        }
-                    }
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, 20)
-                }
-
-                // Main Details Section
+                hero
                 VStack(alignment: .leading, spacing: 24) {
-                    // Quick Stats Grid
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 16) {
-                        StatBox(title: "Installationsgröße", value: game.formattedSize, icon: "internaldrive")
-                        StatBox(title: "Gespielte Zeit (Lokal)", value: state.playtime(for: game), icon: "timer")
-                        StatBox(title: "Zuletzt gespielt", value: game.formattedLastPlayed, icon: "clock")
-                        StatBox(title: "Steam App ID", value: game.appId, icon: "tag")
-                    }
-
-                    Divider()
-
-                    // Performance & Graphics Settings (D3DMetal / MSync)
-                    if var currentBottle = bottle {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Apple Silicon & Performance-Konfiguration")
-                                .font(.title3.bold())
-
-                            Text("Passe hier die Apple GPTK- und CrossOver-Beschleunigungseinstellungen für diesen Titel an.")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-
-                            VStack(spacing: 12) {
-                                ToggleRow(
-                                    title: "Apple D3DMetal (Metal 4 Translation)",
-                                    subtitle: "Übersetzt Direct3D 11/12 hardwarebeschleunigt direkt in Apples Metal API.",
-                                    icon: "sparkles",
-                                    isOn: Binding(
-                                        get: { currentBottle.d3dMetalEnabled },
-                                        set: { newVal in
-                                            currentBottle.d3dMetalEnabled = newVal
-                                            state.updateBottle(currentBottle)
-                                        }
-                                    )
-                                )
-
-                                ToggleRow(
-                                    title: "MSync (Mach Kernel Synchronization)",
-                                    subtitle: "Nutzt native Darwin-Mach-Semaphore zur Vermeidung von CPU-Rucklern bei Multi-Threading.",
-                                    icon: "bolt.fill",
-                                    isOn: Binding(
-                                        get: { currentBottle.msyncEnabled },
-                                        set: { newVal in
-                                            currentBottle.msyncEnabled = newVal
-                                            state.updateBottle(currentBottle)
-                                        }
-                                    )
-                                )
-
-                                ToggleRow(
-                                    title: "MetalFX Upscaling (D3DM)",
-                                    subtitle: "Aktiviert temporales KI-Upscaling über die Apple Silicon Neural Engine.",
-                                    icon: "arrow.up.left.and.arrow.down.right",
-                                    isOn: Binding(
-                                        get: { currentBottle.metalFxEnabled },
-                                        set: { newVal in
-                                            currentBottle.metalFxEnabled = newVal
-                                            state.updateBottle(currentBottle)
-                                        }
-                                    )
-                                )
-
-                                ToggleRow(
-                                    title: "Metal Performance HUD",
-                                    subtitle: "Blendet während des Spielens FPS, Frametimes und GPU-Auslastung oben rechts ein.",
-                                    icon: "gauge.with.needle",
-                                    isOn: Binding(
-                                        get: { currentBottle.metalHudEnabled },
-                                        set: { newVal in
-                                            currentBottle.metalHudEnabled = newVal
-                                            state.updateBottle(currentBottle)
-                                        }
-                                    )
-                                )
-
-                                ToggleRow(
-                                    title: "Retina / HiDPI",
-                                    subtitle: "Doppelte Pixeldichte für scharfe Darstellung",
-                                    icon: "display.2",
-                                    isOn: Binding(
-                                        get: { currentBottle.retinaEnabled },
-                                        set: { newVal in
-                                            currentBottle.retinaEnabled = newVal
-                                            state.updateBottle(currentBottle)
-                                        }
-                                    )
-                                )
-                            }
-                            .padding(16)
-                            .background(Color(nsColor: .controlBackgroundColor))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        }
+                    stats
+                    if let bottle = model.bottle(for: game) {
+                        compatibility(bottle)
                     }
                 }
                 .padding(28)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .ignoresSafeArea(edges: .top)
+        .navigationTitle(game.name)
+        .toolbar {
+            ToolbarItem {
+                Menu("Mehr", systemImage: "ellipsis.circle") { GameActions(game: game) }
+            }
+        }
+    }
+
+    private var hero: some View {
+        ZStack(alignment: .bottomLeading) {
+            CachedImage([game.heroURL, game.headerURL]) {
+                LinearGradient(colors: [.indigo.opacity(0.5), .purple.opacity(0.4)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            .aspectRatio(contentMode: .fill)
+            .frame(height: 320)
+            .frame(maxWidth: .infinity)
+            .clipped()
+
+            LinearGradient(colors: [.clear, Color(nsColor: .windowBackgroundColor)], startPoint: .center, endPoint: .bottom)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text(game.name)
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .shadow(color: .black.opacity(0.4), radius: 8)
+                HStack(spacing: 12) {
+                    playButton
+                    if let bottle = model.bottle(for: game) {
+                        Label(bottle.name, systemImage: "cube")
+                            .font(.callout)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .glassEffect(.regular, in: .capsule)
+                    }
+                }
+            }
+            .padding(28)
+        }
+        .frame(height: 320)
+    }
+
+    @ViewBuilder private var playButton: some View {
+        switch model.sessions[game.id] {
+        case .running(let since):
+            Button(role: .destructive) {
+                Task { await model.stop(game) }
+            } label: {
+                Label("Beenden", systemImage: "stop.fill").font(.headline).padding(.horizontal, 10).padding(.vertical, 4)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(.red)
+            Text(since, style: .timer).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+        case .preparing(let status):
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text(status).font(.callout)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .glassEffect(.regular, in: .capsule)
+        case nil:
+            Button {
+                Task { await model.play(game) }
+            } label: {
+                Label(game.isFullyInstalled ? "Spielen" : "Wird installiert …", systemImage: "play.fill")
+                    .font(.headline).padding(.horizontal, 14).padding(.vertical, 4)
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(!game.isFullyInstalled)
+            .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private var stats: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
+            StatTile(title: "Größe", value: game.sizeOnDisk > 0 ? game.sizeOnDisk.formatted(.byteCount(style: .file)) : "—", icon: "internaldrive")
+            StatTile(title: "Spielzeit (Launcher)", value: model.playtimeText(for: game), icon: "timer")
+            StatTile(title: "Zuletzt gespielt", value: model.lastPlayed(for: game).map { $0.formatted(.relative(presentation: .named)) } ?? "Noch nie", icon: "clock")
+            StatTile(title: "Grafik", value: model.effectiveBackend(for: game)?.displayName ?? "—", icon: "cpu")
+            StatTile(title: "Steam App-ID", value: game.appID, icon: "number")
+        }
+    }
+
+    private func compatibility(_ bottle: Bottle) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Kompatibilität").font(.title3.bold())
+            Text("Grafik-Backend, Sync und HUD gelten für alle Spiele im Bottle „\(bottle.name)“.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("Bottle-Einstellungen …", systemImage: "slider.horizontal.3") { model.bottleSettingsTarget = bottle }
+                Button("Log anzeigen", systemImage: "doc.text.magnifyingglass") { model.revealLog(for: bottle) }
+            }
+            .buttonStyle(.glass)
+        }
     }
 }
 
-private struct StatBox: View {
+private struct StatTile: View {
     let title: String
     let value: String
     let icon: String
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundColor(.accentColor)
-                .frame(width: 32)
-
+            Image(systemName: icon).font(.title2).foregroundStyle(.tint).frame(width: 30)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text(value)
-                    .font(.subheadline.bold())
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.callout.weight(.semibold)).lineLimit(1)
             }
+            Spacer(minLength: 0)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-}
-
-private struct ToggleRow: View {
-    let title: String
-    let subtitle: String
-    let icon: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundColor(.accentColor)
-                .frame(width: 24)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body.bold())
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            Toggle("", isOn: $isOn)
-                .toggleStyle(.switch)
-                .labelsHidden()
-        }
+        .padding(14)
+        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
     }
 }

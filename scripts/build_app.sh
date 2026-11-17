@@ -1,66 +1,52 @@
 #!/bin/bash
-set -e
+# Builds build/MacGamingLauncher.app (release, arm64) and signs it ad hoc.
+set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 APP_NAME="MacGamingLauncher"
-BUILD_DIR="$PROJECT_DIR/build"
-APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
-CONTENTS_DIR="$APP_BUNDLE/Contents"
-MACOS_DIR="$CONTENTS_DIR/MacOS"
-RESOURCES_DIR="$CONTENTS_DIR/Resources"
+VERSION="2.0.0"
+BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
+APP_BUNDLE="$PROJECT_DIR/build/$APP_NAME.app"
+CONTENTS="$APP_BUNDLE/Contents"
 
-echo "==> Building $APP_NAME for macOS (arm64)..."
-export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+echo "==> swift build (release, arm64)"
 swift build -c release --arch arm64
-
-echo "==> Creating .app bundle structure..."
-rm -rf "$APP_BUNDLE"
-mkdir -p "$MACOS_DIR"
-mkdir -p "$RESOURCES_DIR"
-
-# Copy binary
 BIN_PATH="$(swift build -c release --arch arm64 --show-bin-path)/$APP_NAME"
-cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
-chmod +x "$MACOS_DIR/$APP_NAME"
 
-# Copy AppIcon if available
-if [ -f "$PROJECT_DIR/AppIcon.icns" ]; then
-    cp "$PROJECT_DIR/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
-fi
+echo "==> Bundle"
+rm -rf "$APP_BUNDLE"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+cp "$BIN_PATH" "$CONTENTS/MacOS/$APP_NAME"
+[ -f "$PROJECT_DIR/AppIcon.icns" ] && cp "$PROJECT_DIR/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 
-# Create Info.plist
-cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
+cat > "$CONTENTS/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key>
-    <string>MacGamingLauncher</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.khalid.MacGamingLauncher</string>
-    <key>CFBundleName</key>
-    <string>MacGamingLauncher</string>
-    <key>CFBundleDisplayName</key>
-    <string>Mac Gaming Launcher</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
+    <key>CFBundleExecutable</key><string>$APP_NAME</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIdentifier</key><string>com.khalid.MacGamingLauncher</string>
+    <key>CFBundleName</key><string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key><string>Mac Gaming Launcher</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+    <key>CFBundleDevelopmentRegion</key><string>de</string>
+    <key>LSMinimumSystemVersion</key><string>27.0</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+    <key>LSSupportsGameMode</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
 </plist>
 EOF
 
-echo "==> Successfully created $APP_BUNDLE"
-echo "You can open it with: open \"$APP_BUNDLE\""
+echo "==> Codesign (ad hoc)"
+codesign --force --sign - --timestamp=none "$APP_BUNDLE"
+codesign --verify --strict "$APP_BUNDLE"
+
+echo "==> Fertig: $APP_BUNDLE"
+echo "    open \"$APP_BUNDLE\""

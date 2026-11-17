@@ -203,6 +203,29 @@ struct ProcessListTests {
         #expect(process.normalizedWindowsPath.contains(#"steamapps\common\game\"#))
     }
 
+    /// Real layout observed on macOS 27 (steam.exe, KERN_PROCARGS2): Wine moved argv down, so with the kernel's
+    /// original argc=2 the second slot is an empty string, followed by a run of NUL padding, then the environment.
+    @Test func handlesWineRewrittenArgv() throws {
+        var buffer = withUnsafeBytes(of: Int32(2)) { Array($0) }
+        buffer += Array("/rt/Wine/lib/wine/x86_64-unix/wine".utf8) + [0, 0, 0]
+        buffer += Array(#"C:\Program Files (x86)\Steam\steam.exe"#.utf8) + [0]
+        buffer += [UInt8](repeating: 0, count: 37) // padding where the old, longer argv lived
+        buffer += Array("TMPDIR=/var/tmp".utf8) + [0]
+        buffer += Array("WINEPREFIX=/b/Steam".utf8) + [0, 0]
+        let process = try #require(ProcessList.parseProcArgs(buffer, pid: 7))
+        #expect(process.windowsImageName == "steam.exe")
+        #expect(process.winePrefix == "/b/Steam")
+        #expect(process.arguments == [#"C:\Program Files (x86)\Steam\steam.exe"#])
+    }
+
+    /// Against the live system: any running Wine process must be attributed to its prefix.
+    @Test func liveWineProcessesHavePrefix() {
+        let wine = ProcessList.current().filter { $0.windowsImageName != nil }
+        for process in wine {
+            #expect(process.winePrefix != nil, "\(process.commandName) ohne WINEPREFIX")
+        }
+    }
+
     @Test func listsOwnProcess() {
         let processes = ProcessList.current()
         #expect(processes.contains { $0.pid == getpid() })

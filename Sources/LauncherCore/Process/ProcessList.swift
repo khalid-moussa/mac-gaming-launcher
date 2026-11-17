@@ -88,19 +88,20 @@ public enum ProcessList {
             return string
         }
 
+        // Wine rewrites argv in place (argv[0] becomes the Windows image path) and pads the freed tail with NUL
+        // bytes, while the kernel keeps the original argc. So arguments may contain empty strings, and the
+        // environment starts after an arbitrary run of NULs — keep scanning past empty strings.
         var arguments: [String] = []
         for _ in 0..<max(argc, 0) {
             guard let argument = nextString() else { break }
             arguments.append(argument)
         }
+        arguments.removeAll { $0.isEmpty }
         guard let commandName = arguments.first else { return nil }
 
         var winePrefix: String?
-        while let entry = nextString(), !entry.isEmpty {
-            if entry.hasPrefix("WINEPREFIX=") {
-                winePrefix = String(entry.dropFirst("WINEPREFIX=".count))
-                break
-            }
+        while winePrefix == nil, let entry = nextString() {
+            if entry.hasPrefix("WINEPREFIX=") { winePrefix = String(entry.dropFirst("WINEPREFIX=".count)) }
         }
         return RunningProcess(pid: pid, commandName: commandName, arguments: arguments, winePrefix: winePrefix)
     }

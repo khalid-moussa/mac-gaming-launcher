@@ -171,12 +171,20 @@ public struct RuntimeInstaller: Sendable {
         progress(.finishing)
         _ = try? await ProcessRunner.run(URL(filePath: "/usr/bin/xattr"), arguments: ["-dr", "com.apple.quarantine", stagedLibraries.path])
         try fileManager.createDirectory(at: paths.runtimeFolder, withIntermediateDirectories: true)
+        var old: URL?
         if fileManager.fileExists(atPath: paths.librariesFolder.path) {
-            let old = paths.runtimeFolder.appending(path: "Libraries.old-\(UUID().uuidString)")
-            try fileManager.moveItem(at: paths.librariesFolder, to: old)
-            try? fileManager.removeItem(at: old)
+            let aside = paths.runtimeFolder.appending(path: "Libraries.old-\(UUID().uuidString)")
+            try fileManager.moveItem(at: paths.librariesFolder, to: aside)
+            old = aside
         }
-        try fileManager.moveItem(at: stagedLibraries, to: paths.librariesFolder)
+        do {
+            try fileManager.moveItem(at: stagedLibraries, to: paths.librariesFolder)
+        } catch {
+            // Roll back so there is always a working runtime.
+            if let old { try? fileManager.moveItem(at: old, to: paths.librariesFolder) }
+            throw error
+        }
+        if let old { try? fileManager.removeItem(at: old) }
         Log.runtime.info("Runtime \(release.version, privacy: .public) installiert")
     }
 

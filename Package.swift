@@ -14,10 +14,11 @@ let package = Package(
     targets: [
         // Platform logic: runtime install, bottles, Wine invocation, Steam integration.
         // No UI, no global singletons — everything takes its dependencies explicitly so it is testable.
+        // Async functions here intentionally run on the global executor (not the caller's actor), so file copies,
+        // downloads and process polling never block the main thread.
         .target(
             name: "LauncherCore",
             swiftSettings: [
-                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
                 .enableUpcomingFeature("InferIsolatedConformances"),
             ]
         ),

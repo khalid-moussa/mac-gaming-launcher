@@ -99,7 +99,7 @@ final class AppModel {
     func isDone(_ step: SetupStep) -> Bool {
         switch step {
         case .rosetta: rosettaInstalled
-        case .runtime: managedEngine != nil || crossOverEngine != nil
+        case .runtime: managedEngine != nil || (crossOverEngine != nil && bottles.contains { $0.owner == .crossOver })
         case .bottle: !bottles.isEmpty
         case .steam: !steamInstalled.isEmpty
         case .login: !accounts.isEmpty
@@ -218,7 +218,10 @@ final class AppModel {
 
     /// Runs `operation` with an activity indicator and error reporting. Only one at a time.
     private func perform(_ title: String, _ operation: () async throws -> Void) async {
-        guard activity == nil else { return }
+        if let running = activity {
+            errorMessage = "Bitte warten, bis „\(running.title.trimmingCharacters(in: CharacterSet(charactersIn: " …")))“ abgeschlossen ist."
+            return
+        }
         activity = Activity(title: title)
         defer { activity = nil }
         do {
@@ -241,6 +244,11 @@ final class AppModel {
     }
 
     func installRuntime() async {
+        // Replacing the Wine tree under a running wineserver breaks the bottle.
+        if bottles.contains(where: { $0.owner == .launcher && steamRunning.contains($0.id) }) || sessions.isEmpty == false {
+            errorMessage = "Bitte zuerst Steam und alle Spiele beenden, bevor die Runtime aktualisiert wird."
+            return
+        }
         await perform("Runtime wird geladen …") {
             let installer = RuntimeInstaller(paths: paths)
             let release: RuntimeRelease
@@ -253,7 +261,8 @@ final class AppModel {
             try await installer.install(release) { [weak self] phase in
                 Task { @MainActor in self?.update(phase) }
             }
-            try D3DMetalInstaller(paths: paths).deployIfImported()
+            let paths = paths
+            try await Task.detached { try D3DMetalInstaller(paths: paths).deployIfImported() }.value
             availableRuntime = nil
         }
     }
@@ -304,9 +313,11 @@ final class AppModel {
 
     /// Executable names of all installed games in the bottle (for per-game DLL overrides).
     private func gameExecutables(in bottle: Bottle) async -> [(game: SteamGame, executables: [URL])] {
-        let games = games.filter { $0.bottleID == bottle.id && $0.isFullyInstalled }
+        let games = games.filter { $0.bottleID == bottle.id }
         return await Task.detached(priority: .userInitiated) {
-            games.map { game in (game, Self.executables(in: game.installFolder)) }
+            games
+                .filter { FileManager.default.fileExists(atPath: $0.installFolder.path) }
+                .map { game in (game, Self.executables(in: game.installFolder)) }
         }.value
     }
 
@@ -314,9 +325,11 @@ final class AppModel {
         let names = SteamLibrary.executableNames(in: folder)
         guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
         var result: [URL] = []
-        for case let url as URL in enumerator where names.contains(url.lastPathComponent.lowercased()) {
-            result.append(url)
-            if result.count >= names.count * 2 { break }
+        var visited = 0
+        for case let url as URL in enumerator {
+            visited += 1
+            if visited > 20_000 || result.count >= names.count * 2 { break }
+            if names.contains(url.lastPathComponent.lowercased()) { result.append(url) }
         }
         return result
     }
@@ -435,8 +448,11 @@ final class AppModel {
     }
 
     func runTool(_ tool: String, in bottle: Bottle) async {
-        await perform("\(tool) wird geöffnet …") {
-            try await client(for: bottle).wine.run(tool, timeout: nil)
+        do {
+            let wine = try client(for: bottle).wine
+            Task.detached { _ = try? await wine.run(tool, timeout: nil) }
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -457,7 +473,8 @@ final class AppModel {
 
     func removeD3DMetal() async {
         await perform("D3DMetal wird entfernt …") {
-            try D3DMetalInstaller(paths: paths).remove()
+            let paths = paths
+            try await Task.detached { try D3DMetalInstaller(paths: paths).remove() }.value
         }
     }
 

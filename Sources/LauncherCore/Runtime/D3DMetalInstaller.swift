@@ -153,10 +153,12 @@ public struct D3DMetalInstaller: Sendable {
             let backup = originals.appending(path: target)
             if fileManager.fileExists(atPath: destination.path) {
                 let isOurs = fileManager.contentsEqual(atPath: destination.path, andPath: storePE.appending(path: source).path)
-                if !isOurs, !fileManager.fileExists(atPath: backup.path) {
-                    try fileManager.moveItem(at: destination, to: backup)
-                } else {
+                if isOurs {
                     try fileManager.removeItem(at: destination)
+                } else {
+                    // Wine's own DLL (possibly a newer one after a runtime update): it becomes the backup.
+                    try? fileManager.removeItem(at: backup)
+                    try fileManager.moveItem(at: destination, to: backup)
                 }
             }
             try fileManager.copyItem(at: storePE.appending(path: source), to: destination)
@@ -164,31 +166,43 @@ public struct D3DMetalInstaller: Sendable {
             let link = unixDirectory.appending(path: unixName)
             if (try? fileManager.destinationOfSymbolicLink(atPath: link.path)) != nil || fileManager.fileExists(atPath: link.path) {
                 let backupSO = originals.appending(path: unixName)
-                if (try? fileManager.destinationOfSymbolicLink(atPath: link.path)) != Self.unixLinkDestination,
-                   !fileManager.fileExists(atPath: backupSO.path) {
-                    try? fileManager.moveItem(at: link, to: backupSO)
-                } else {
+                if (try? fileManager.destinationOfSymbolicLink(atPath: link.path)) == Self.unixLinkDestination {
                     try? fileManager.removeItem(at: link)
+                } else {
+                    try? fileManager.removeItem(at: backupSO)
+                    try fileManager.moveItem(at: link, to: backupSO)
                 }
             }
             try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: Self.unixLinkDestination)
         }
 
         let external = wineLib.appending(path: "external")
-        if fileManager.fileExists(atPath: external.path) { try fileManager.removeItem(at: external) }
-        try fileManager.copyItem(at: storeLib.appending(path: "external"), to: external)
+        try fileManager.createDirectory(at: external, withIntermediateDirectories: true)
+        for item in try fileManager.contentsOfDirectory(at: storeLib.appending(path: "external"), includingPropertiesForKeys: nil) {
+            let target = external.appending(path: item.lastPathComponent)
+            if fileManager.fileExists(atPath: target.path) || (try? fileManager.destinationOfSymbolicLink(atPath: target.path)) != nil {
+                try fileManager.removeItem(at: target)
+            }
+            try fileManager.copyItem(at: item, to: target)
+        }
         Log.runtime.info("D3DMetal in Runtime eingebunden")
     }
 
     /// Removes D3DMetal from the runtime and restores Wine's original DLLs.
     public func remove() throws {
         let fileManager = FileManager.default
+        let storePE = storeLib.appending(path: "wine/x86_64-windows")
         let names = Self.forwarderDLLs + [Self.metalFXName, Self.nvapiName]
         for name in names {
             let destination = peDirectory.appending(path: name)
-            try? fileManager.removeItem(at: destination)
             let backup = originals.appending(path: name)
-            if fileManager.fileExists(atPath: backup.path) { try fileManager.moveItem(at: backup, to: destination) }
+            let storeName = name == Self.metalFXName ? Self.metalFXSource : name
+            // Only touch files we put there; never delete Wine's own DLL without a backup to restore.
+            let isOurs = fileManager.contentsEqual(atPath: destination.path, andPath: storePE.appending(path: storeName).path)
+            if isOurs {
+                try fileManager.removeItem(at: destination)
+                if fileManager.fileExists(atPath: backup.path) { try fileManager.moveItem(at: backup, to: destination) }
+            }
 
             let unixName = (name as NSString).deletingPathExtension + ".so"
             let link = unixDirectory.appending(path: unixName)
@@ -200,7 +214,12 @@ public struct D3DMetalInstaller: Sendable {
                 try? fileManager.moveItem(at: backupSO, to: link)
             }
         }
-        try? fileManager.removeItem(at: wineLib.appending(path: "external"))
+        let external = wineLib.appending(path: "external")
+        if fileManager.fileExists(atPath: external.appending(path: "libd3dshared.dylib").path) {
+            for item in (try? fileManager.contentsOfDirectory(at: storeLib.appending(path: "external"), includingPropertiesForKeys: nil)) ?? [] {
+                try? fileManager.removeItem(at: external.appending(path: item.lastPathComponent))
+            }
+        }
         try? fileManager.removeItem(at: paths.d3dMetalStore)
     }
 

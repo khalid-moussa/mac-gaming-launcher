@@ -7,10 +7,13 @@ public struct ProcessResult: Sendable {
     public var succeeded: Bool { status == 0 }
 }
 
-/// Spawns child processes. Output never goes to an unread pipe (that blocks Wine once the buffer fills):
-/// it is either collected by a reader task or appended to a log file.
+/// Spawns child processes.
+///
+/// Output always goes to a file, never to a pipe: Wine forks `wineserver` and Windows programs (Steam) that inherit
+/// stdout/stderr and outlive the command. With a pipe, the reader would never see EOF (hang), and an unread pipe
+/// blocks writers once its buffer fills (frozen game). A file has neither problem.
 public enum ProcessRunner {
-    /// Runs a process to completion and returns its combined output (stdout + stderr).
+    /// Runs a process to completion and returns its combined output (stdout + stderr), read back from the log.
     /// The process is terminated if the surrounding task is cancelled or `timeout` elapses.
     public static func run(
         _ executable: URL,
@@ -27,29 +30,24 @@ public enum ProcessRunner {
         if let currentDirectory { process.currentDirectoryURL = currentDirectory }
         process.standardInput = FileHandle.nullDevice
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        let logHandle = logFile.flatMap(openForAppending)
-
-        // Drain the pipe continuously on a background reader so the child never blocks on write.
-        let reader = Task.detached { () -> Data in
-            var collected = Data()
-            let handle = pipe.fileHandleForReading
-            while true {
-                let chunk = handle.availableData
-                if chunk.isEmpty { break }
-                try? logHandle?.write(contentsOf: chunk)
-                // Keep at most the last 256 KB in memory.
-                collected.append(chunk)
-                if collected.count > 512_000 { collected.removeFirst(collected.count - 256_000) }
-            }
-            return collected
+        let temporary = logFile == nil
+        let outputFile = logFile ?? FileManager.default.temporaryDirectory.appending(path: "mgl-\(UUID().uuidString).log")
+        guard let handle = openForAppending(outputFile) else {
+            throw LauncherError("Logdatei konnte nicht geöffnet werden.", detail: outputFile.path)
+        }
+        let startOffset = (try? handle.offset()) ?? 0
+        process.standardOutput = handle
+        process.standardError = handle
+        defer {
+            try? handle.close()
+            if temporary { try? FileManager.default.removeItem(at: outputFile) }
         }
 
+        let timeoutTask = LockedBox<Task<Void, Never>?>(nil)
         let status: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 process.terminationHandler = { finished in
+                    timeoutTask.value?.cancel()
                     continuation.resume(returning: finished.terminationStatus)
                 }
                 do {
@@ -60,12 +58,11 @@ public enum ProcessRunner {
                     return
                 }
                 if let timeout {
-                    Task.detached {
+                    timeoutTask.value = Task.detached {
                         try? await Task.sleep(for: timeout)
-                        if process.isRunning {
-                            Log.wine.warning("Timeout nach \(timeout) – beende \(executable.lastPathComponent, privacy: .public)")
-                            process.terminate()
-                        }
+                        guard !Task.isCancelled, process.isRunning else { return }
+                        Log.wine.warning("Timeout nach \(timeout) – beende \(executable.lastPathComponent, privacy: .public)")
+                        process.terminate()
                     }
                 }
             }
@@ -73,11 +70,18 @@ public enum ProcessRunner {
             if process.isRunning { process.terminate() }
         }
 
-        // The write end is closed once the child (and anything that inherited it) exits.
-        try? pipe.fileHandleForWriting.close()
-        let data = await reader.value
-        try? logHandle?.close()
-        return ProcessResult(status: status, output: String(decoding: data, as: UTF8.self))
+        return ProcessResult(status: status, output: readTail(of: outputFile, from: startOffset))
+    }
+
+    /// Reads what was appended to `file` since `offset` (at most the last 256 KB).
+    static func readTail(of file: URL, from offset: UInt64, limit: UInt64 = 256_000) -> String {
+        guard let reader = try? FileHandle(forReadingFrom: file) else { return "" }
+        defer { try? reader.close() }
+        let end = (try? reader.seekToEnd()) ?? offset
+        let start = end > offset + limit ? end - limit : offset
+        try? reader.seek(toOffset: start)
+        let data = (try? reader.read(upToCount: Int(end - start))) ?? Data()
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Starts a long-running process (e.g. the Steam client) without waiting. Output goes to `logFile`.
@@ -106,13 +110,13 @@ public enum ProcessRunner {
         return process
     }
 
+    /// Opens with `O_APPEND` so every writer (we, Wine, Steam — each with its own descriptor) appends atomically
+    /// instead of overwriting from a stale offset.
     static func openForAppending(_ url: URL) -> FileHandle? {
-        let fileManager = FileManager.default
-        try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !fileManager.fileExists(atPath: url.path) {
-            fileManager.createFile(atPath: url.path, contents: nil)
-        }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return nil }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
+        guard descriptor >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         _ = try? handle.seekToEnd()
         return handle
     }

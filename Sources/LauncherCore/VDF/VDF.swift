@@ -55,11 +55,14 @@ public enum VDF {
         return try parseObject(&tokenizer, isRoot: true)
     }
 
+    /// Parses the raw bytes: Steam writes UTF-8; tokens that aren't valid UTF-8 (very old files) are read as Latin-1.
     public static func parse(contentsOf url: URL) throws -> VDFObject {
-        let data = try Data(contentsOf: url)
-        // Steam writes UTF-8; fall back to Latin-1 for very old files rather than dropping them.
-        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: Unicode.UTF8.self)
-        return try parse(text)
+        var tokenizer = Tokenizer(bytes: Array(try Data(contentsOf: url)))
+        return try parseObject(&tokenizer, isRoot: true)
+    }
+
+    static func decodeText<Bytes: Collection<UInt8>>(_ bytes: Bytes) -> String {
+        String(validating: bytes, as: UTF8.self) ?? String(String.UnicodeScalarView(bytes.map { Unicode.Scalar($0) }))
     }
 
     private static func parseObject(_ tokenizer: inout Tokenizer, isRoot: Bool) throws -> VDFObject {
@@ -142,13 +145,16 @@ public enum VDF {
             while index < bytes.count, bytes[index] != UInt8(ascii: "\n") { index += 1 }
         }
 
-        private mutating func quoted() -> Token {
+        /// `nil` for a string cut off by the end of the file: a half-read value is worse than none
+        /// (`"StateFlags" "10` instead of `"1026"`), so the truncated pair is dropped.
+        private mutating func quoted() -> Token? {
             let start = index
             index += 1 // opening quote
             var buffer: [UInt8] = []
+            var terminated = false
             while index < bytes.count {
                 let byte = bytes[index]
-                if byte == UInt8(ascii: "\"") { index += 1; break }
+                if byte == UInt8(ascii: "\"") { index += 1; terminated = true; break }
                 if byte == UInt8(ascii: "\\"), let escaped = peek(1) {
                     switch escaped {
                     case UInt8(ascii: "n"): buffer.append(UInt8(ascii: "\n"))
@@ -163,7 +169,8 @@ public enum VDF {
                 buffer.append(byte)
                 index += 1
             }
-            return Token(kind: .text(String(decoding: buffer, as: UTF8.self)), offset: start)
+            guard terminated else { return nil }
+            return Token(kind: .text(VDF.decodeText(buffer)), offset: start)
         }
 
         private mutating func bare() -> Token {
@@ -172,12 +179,12 @@ public enum VDF {
                 switch bytes[index] {
                 case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r"),
                      UInt8(ascii: "{"), UInt8(ascii: "}"), UInt8(ascii: "\""), 0:
-                    return Token(kind: .text(String(decoding: bytes[start..<index], as: UTF8.self)), offset: start)
+                    return Token(kind: .text(VDF.decodeText(bytes[start..<index])), offset: start)
                 default:
                     index += 1
                 }
             }
-            return Token(kind: .text(String(decoding: bytes[start..<index], as: UTF8.self)), offset: start)
+            return Token(kind: .text(VDF.decodeText(bytes[start..<index])), offset: start)
         }
     }
 }

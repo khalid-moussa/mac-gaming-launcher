@@ -36,8 +36,6 @@ public struct SteamGame: Identifiable, Sendable, Hashable {
 
     /// `StateFlags` bit 4 = fully installed. Anything else is downloading, updating, or broken.
     public var isFullyInstalled: Bool { stateFlags & 4 != 0 }
-    /// Bit 2 (update required) or bit 1024 (downloading) etc. — Steam is still working on it.
-    public var needsUpdate: Bool { stateFlags & 2 != 0 || stateFlags & 512 != 0 || stateFlags & 1024 != 0 }
 
     public var installFolder: URL {
         libraryFolder.appending(path: "common", directoryHint: .isDirectory).appending(path: installDir, directoryHint: .isDirectory)

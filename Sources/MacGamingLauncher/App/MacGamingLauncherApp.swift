@@ -37,6 +37,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// Quitting mid-operation can leave a half-created bottle or a half-swapped runtime behind.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let activity = model?.activity else { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "„\(activity.title.trimmingCharacters(in: CharacterSet(charactersIn: " …")))“ läuft noch."
+        alert.informativeText = "Wenn du jetzt beendest, kann eine unvollständige Installation zurückbleiben."
+        alert.addButton(withTitle: "Weiterlaufen lassen")
+        alert.addButton(withTitle: "Trotzdem beenden")
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         model?.applicationWillTerminate()
     }

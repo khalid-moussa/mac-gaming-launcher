@@ -31,6 +31,7 @@ struct LibraryView: View {
         switch model.selection {
         case .library(let filter): filter.title
         case .bottle(let id): model.bottle(id: id)?.name ?? "Bottle"
+        case .macSteam: "Steam (macOS)"
         case .none: "Bibliothek"
         }
     }
@@ -38,7 +39,8 @@ struct LibraryView: View {
     @ViewBuilder private var emptyState: some View {
         if !model.searchText.isEmpty {
             ContentUnavailableView.search(text: model.searchText)
-        } else if let bottle = model.primaryBottle, model.steamInstalled.contains(bottle.id) {
+        } else if model.games.isEmpty || model.selection == .library(.installed),
+                  let bottle = emptyStateBottle, model.steamInstalled.contains(bottle.id) {
             ContentUnavailableView {
                 Label("Noch keine Spiele installiert", systemImage: "gamecontroller")
             } description: {
@@ -50,8 +52,16 @@ struct LibraryView: View {
                     .buttonStyle(.glassProminent)
             }
         } else {
-            ContentUnavailableView("Keine Spiele", systemImage: "gamecontroller", description: Text("Für diesen Filter gibt es keine Spiele."))
+            ContentUnavailableView("Keine Spiele", systemImage: "gamecontroller", description: Text(model.selection == .library(.recent)
+                ? "Hier erscheinen Spiele, sobald du sie über den Launcher gespielt hast."
+                : "Für diesen Filter gibt es keine Spiele."))
         }
+    }
+
+    /// The selected bottle, else the primary one.
+    private var emptyStateBottle: Bottle? {
+        if case .bottle(let id) = model.selection { return model.bottle(id: id) }
+        return model.primaryBottle
     }
 }
 
@@ -80,6 +90,7 @@ struct GameCard: View {
             }
             .contentShape(.rect)
             .onTapGesture { model.selectedGameID = game.id }
+            .onTapGesture(count: 2) { if game.isFullyInstalled, model.activity == nil { model.launch(game) } }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(game.name).font(.headline).lineLimit(1)
@@ -92,6 +103,7 @@ struct GameCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { model.selectedGameID = game.id }
+        .accessibilityAction(named: "Spielen") { if game.isFullyInstalled { model.launch(game) } }
     }
 
     private var statusLine: String {
@@ -107,15 +119,15 @@ struct GameCard: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.green)
                 .padding(.horizontal, 10).padding(.vertical, 5)
-                .glassEffect(.regular, in: .capsule)
+                .background(.ultraThinMaterial, in: .capsule)
         case .preparing:
             ProgressView().controlSize(.small)
                 .padding(8)
-                .glassEffect(.regular, in: .circle)
+                .background(.ultraThinMaterial, in: .circle)
         case nil:
-            if isHovered && game.isFullyInstalled {
+            if isHovered && game.isFullyInstalled && model.activity == nil {
                 Button {
-                    Task { await model.play(game) }
+                    model.launch(game)
                 } label: {
                     Image(systemName: "play.fill").font(.title3).frame(width: 30, height: 30)
                 }
@@ -133,11 +145,14 @@ struct GameActions: View {
     let game: SteamGame
 
     var body: some View {
-        if case .running = model.sessions[game.id] {
+        switch model.sessions[game.id] {
+        case .running:
             Button("Beenden", systemImage: "stop.fill") { Task { await model.stop(game) } }
-        } else {
-            Button("Spielen", systemImage: "play.fill") { Task { await model.play(game) } }
-                .disabled(!game.isFullyInstalled || model.sessions[game.id] != nil)
+        case .preparing:
+            Button("Start abbrechen", systemImage: "xmark") { model.cancelLaunch(game) }
+        case nil:
+            Button("Spielen", systemImage: "play.fill") { model.launch(game) }
+                .disabled(!game.isFullyInstalled || model.activity != nil)
         }
         Divider()
         Button("Details", systemImage: "info.circle") { model.selectedGameID = game.id }

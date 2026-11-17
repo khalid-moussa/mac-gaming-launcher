@@ -35,10 +35,19 @@ struct SetupView: View {
 /// Compact reminder shown above the library while setup is incomplete.
 struct SetupBanner: View {
     @Environment(AppModel.self) private var model
+    /// Users who only play through the native macOS Steam client may not want a Windows setup.
+    @AppStorage("setupBannerHidden") private var hidden = false
 
     var body: some View {
-        if let step = model.currentSetupStep {
+        if let step = model.currentSetupStep, !hidden {
             SetupStepRow(step: step)
+                .overlay(alignment: .topTrailing) {
+                    Button("Ausblenden", systemImage: "xmark") { hidden = true }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .help("Einrichtungshinweis ausblenden")
+                        .padding(10)
+                }
         }
     }
 }
@@ -65,7 +74,7 @@ struct SetupStepRow: View {
         }
         .padding(16)
         .opacity(done || current ? 1 : 0.55)
-        .glassEffect(current ? .regular.tint(.accentColor.opacity(0.08)) : .regular, in: .rect(cornerRadius: 16))
+        .background(current ? AnyShapeStyle(Color.accentColor.opacity(0.08)) : AnyShapeStyle(.quaternary.opacity(0.5)), in: .rect(cornerRadius: 16))
     }
 
     private var title: String {
@@ -87,7 +96,7 @@ struct SetupStepRow: View {
             if let crossOver = model.crossOverEngine { return "\(crossOver.displayName) erkannt." }
             return "Wine 11 (CrossOver-Basis) mit DXMT und DXVK, ca. 460 MB Download."
         case .bottle:
-            return "Ein 64-bit-Windows-10-Prefix, in dem Steam und deine Spiele laufen."
+            return "Ein 64-Bit-Windows-10-Präfix, in dem Steam und deine Spiele laufen."
         case .steam:
             return "Der offizielle Steam-Client wird heruntergeladen und still installiert."
         case .login:

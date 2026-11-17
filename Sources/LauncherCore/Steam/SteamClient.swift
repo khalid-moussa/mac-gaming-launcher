@@ -48,29 +48,34 @@ public struct SteamClient: Sendable {
     // MARK: - Control
 
     /// Prepares DLLs/registry for Steam and its games. Run before starting Steam or a game.
-    public func prepare(gameExecutables: Set<String>, dxmtGames: [(installFolder: URL, executables: [URL])]) async throws {
+    /// `dxmtGames` must list every game of the bottle (copies for unlisted games are removed); `nil` leaves them alone.
+    public func prepare(gameExecutables: Set<String>, dxmtGames: [(installFolder: URL, executables: [URL])]?) async throws {
         guard wine.engine.kind == .managed else { return }
         let plan = GraphicsPlan(engine: wine.engine, bottle: bottle, paths: wine.paths)
         try plan.deployClientDLLs()
-        try plan.syncDXMTGameFolders(games: dxmtGames)
+        if let dxmtGames { plan.syncDXMTGameFolders(games: dxmtGames) }
         try await wine.importRegistry(plan.registry(gameExecutables: gameExecutables))
     }
 
     /// Starts Steam unless running and waits until `steam.exe` is up (Steam may update and restart itself first).
     /// `visible` shows the main window (first start / login); otherwise Steam starts minimized to the tray.
-    public func ensureRunning(visible: Bool, timeout: Duration = .seconds(120)) async throws {
-        if isRunning { return }
+    /// `command` (e.g. `-applaunch <id>`) is passed on this first start, where Steam queues it until login and
+    /// self-update are done — sending it to a client that is still starting can lose it.
+    /// Returns `true` if Steam was started (and received `command`), `false` if it was already running.
+    @discardableResult
+    public func ensureRunning(visible: Bool, command: [String] = [], timeout: Duration = .seconds(120)) async throws -> Bool {
+        if isRunning { return false }
         guard let steamFolder = library.steamFolder() else {
             throw LauncherError("Steam ist in diesem Bottle nicht installiert.")
         }
         var args = visible ? [] : ["-silent"]
-        args += bottle.settings.extraSteamArguments
+        args += bottle.settings.extraSteamArguments + command
         try await wine.start(unixPath: steamFolder.appending(path: "steam.exe"), args)
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
             try await Task.sleep(for: .seconds(2))
-            if isRunning { return }
+            if isRunning { return true }
         }
         throw LauncherError("Steam reagiert nicht.", detail: "steam.exe ist nach \(timeout) nicht gestartet. Details im Log: \(wine.logFile.path)")
     }
@@ -96,8 +101,9 @@ public struct SteamClient: Sendable {
         try await send(["steam://open/main"])
     }
 
-    /// Asks Steam to quit; kills the bottle if it doesn't within `timeout`.
-    public func shutdown(timeout: Duration = .seconds(20)) async {
+    /// Asks Steam to quit (it may finish a cloud sync first). After `timeout`, only the Steam client's own processes
+    /// are terminated — never the whole bottle, which could hold a running game.
+    public func shutdown(timeout: Duration = .seconds(60)) async {
         guard isRunning else { return }
         try? await send(["-shutdown"])
         let clock = ContinuousClock()
@@ -105,6 +111,10 @@ public struct SteamClient: Sendable {
         while clock.now < deadline, isRunning {
             try? await Task.sleep(for: .seconds(1))
         }
-        if isRunning { await wine.killAll() }
+        guard isRunning else { return }
+        let client = ProcessList.wineProcesses(inPrefix: bottle.url).filter {
+            $0.windowsImageName.map(GraphicsPlan.steamExecutables.contains) ?? false
+        }
+        await GameMonitor.terminate(client)
     }
 }

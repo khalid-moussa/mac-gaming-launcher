@@ -14,15 +14,16 @@ struct RootView: View {
             NavigationStack {
                 detail
                     .navigationDestination(item: $model.selectedGameID) { id in
-                        if let game = model.games.first(where: { $0.id == id }) {
-                            GameDetailView(game: game)
-                        }
+                        // Looked up on every render, so install/update progress shows up in the open detail.
+                        GameDetailContainer(gameID: id)
                     }
             }
         }
         .searchable(text: $model.searchText, placement: .sidebar, prompt: "Spiele durchsuchen")
         .toolbar { toolbar }
-        .overlay(alignment: .bottom) { activityBanner }
+        .overlay(alignment: .bottom) {
+            activityBanner.animation(.snappy, value: model.activity)
+        }
         .sheet(item: $model.bottleSettingsTarget) { bottle in
             BottleSettingsView(bottle: bottle)
         }
@@ -68,6 +69,7 @@ struct RootView: View {
                     Label("Steam", systemImage: model.steamRunning.contains(bottle.id) ? "circle.fill" : "circle")
                 }
                 .help(model.steamRunning.contains(bottle.id) ? "Steam läuft – Fenster anzeigen" : "Steam starten")
+                .accessibilityValue(model.steamRunning.contains(bottle.id) ? "läuft" : "beendet")
             }
             Button {
                 Task { await model.refresh() }
@@ -103,7 +105,17 @@ struct RootView: View {
             .glassEffect(.regular, in: .capsule)
             .padding(.bottom, 20)
             .transition(.move(edge: .bottom).combined(with: .opacity))
-            .animation(.snappy, value: model.activity)
+        }
+    }
+}
+
+private struct GameDetailContainer: View {
+    @Environment(AppModel.self) private var model
+    let gameID: SteamGame.ID
+
+    var body: some View {
+        if let game = model.games.first(where: { $0.id == gameID }) {
+            GameDetailView(game: game)
         }
     }
 }

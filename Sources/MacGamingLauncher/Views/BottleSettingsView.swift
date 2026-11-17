@@ -14,18 +14,29 @@ struct BottleSettingsView: View {
 
     private var engine: Engine? { model.engine(for: bottle) }
 
+    /// Available backends, plus the saved one if it is no longer available (so the picker never shows a blank).
+    private var backends: [GraphicsBackend] {
+        var result = engine?.availableBackends ?? GraphicsBackend.allCases
+        if !result.contains(bottle.settings.graphics) { result.append(bottle.settings.graphics) }
+        return result
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     Picker("Grafik-Backend", selection: $bottle.settings.graphics) {
-                        ForEach(engine?.availableBackends ?? GraphicsBackend.allCases) { backend in
-                            Text(backend.displayName).tag(backend)
+                        ForEach(backends) { backend in
+                            let available = engine?.availableBackends.contains(backend) ?? true
+                            Text(available ? backend.displayName : "\(backend.displayName) (nicht verfügbar)").tag(backend)
                         }
                     }
                     Text(bottle.settings.graphics.summary).font(.caption).foregroundStyle(.secondary)
-                    if bottle.settings.graphics == .automatic, let engine, engine.kind == .managed {
-                        LabeledContent("Aktiv", value: GraphicsPlan.gameBackend(for: .automatic, engine: engine).displayName)
+                    if let engine, engine.kind == .managed {
+                        let active = GraphicsPlan.gameBackend(for: bottle.settings.graphics, engine: engine)
+                        if active != bottle.settings.graphics {
+                            LabeledContent("Aktiv", value: active.displayName)
+                        }
                     }
                     if engine?.kind == .managed, engine?.d3dMetal == nil {
                         Text("D3DMetal (für DirectX-12-Spiele) wird verfügbar, sobald du das Game Porting Toolkit in den Einstellungen importierst.")
@@ -76,10 +87,15 @@ struct BottleSettingsView: View {
                 if model.steamRunning.contains(bottle.id) {
                     ToolbarItem {
                         Button("Sichern & Steam neu starten") { save(restart: true) }
+                            .disabled(model.activity != nil || model.hasRunningSession(in: bottle))
+                            .help(model.hasRunningSession(in: bottle) ? "In diesem Bottle läuft ein Spiel." : "")
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
+                    // Saving triggers follow-up work (Windows version, restart) that needs a free model.
                     Button("Sichern") { save(restart: false) }
+                        .disabled(model.activity != nil)
+                        .help(model.activity != nil ? "Bitte warten, bis der laufende Vorgang abgeschlossen ist." : "")
                 }
             }
         }

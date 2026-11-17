@@ -49,7 +49,7 @@ struct GameDetailView: View {
                         Label(source, systemImage: model.isMacSteamGame(game) ? "apple.logo" : "cube")
                             .font(.callout)
                             .padding(.horizontal, 12).padding(.vertical, 7)
-                            .glassEffect(.regular, in: .capsule)
+                            .background(.ultraThinMaterial, in: .capsule)
                     }
                 }
             }
@@ -75,17 +75,21 @@ struct GameDetailView: View {
                 Text(status).font(.callout)
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
-            .glassEffect(.regular, in: .capsule)
+            .background(.ultraThinMaterial, in: .capsule)
+            Button("Abbrechen") { model.cancelLaunch(game) }
+                .buttonStyle(.glass)
         case nil:
             Button {
-                Task { await model.play(game) }
+                model.launch(game)
             } label: {
-                Label(game.isFullyInstalled ? "Spielen" : "Wird installiert …", systemImage: "play.fill")
+                Label(game.isFullyInstalled ? "Spielen" : "Wird von Steam aktualisiert …",
+                      systemImage: game.isFullyInstalled ? "play.fill" : "arrow.down.circle")
                     .font(.headline).padding(.horizontal, 14).padding(.vertical, 4)
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
-            .disabled(!game.isFullyInstalled)
+            .disabled(!game.isFullyInstalled || model.activity != nil)
+            .help(model.activity != nil ? "Bitte warten, bis der laufende Vorgang abgeschlossen ist." : "")
             .keyboardShortcut(.defaultAction)
         }
     }
@@ -95,8 +99,8 @@ struct GameDetailView: View {
             StatTile(title: "Größe", value: game.sizeOnDisk > 0 ? game.sizeOnDisk.formatted(.byteCount(style: .file)) : "—", icon: "internaldrive")
             StatTile(title: "Spielzeit (Launcher)", value: model.playtimeText(for: game), icon: "timer")
             StatTile(title: "Zuletzt gespielt", value: model.lastPlayed(for: game).map { $0.formatted(.relative(presentation: .named)) } ?? "Noch nie", icon: "clock")
-            StatTile(title: "Grafik", value: model.effectiveBackend(for: game)?.displayName ?? "—", icon: "cpu")
-            StatTile(title: "Steam App-ID", value: game.appID, icon: "number")
+            StatTile(title: "Grafik", value: model.isMacSteamGame(game) ? "über Steam (macOS)" : model.effectiveBackend(for: game)?.displayName ?? "—", icon: "cpu")
+            StatTile(title: "Steam-App-ID", value: game.appID, icon: "number")
         }
     }
 

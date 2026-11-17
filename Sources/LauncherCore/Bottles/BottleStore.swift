@@ -6,9 +6,15 @@ public struct BottleStore: Sendable {
 
     public init(paths: LauncherPaths) { self.paths = paths }
 
+    /// Present while a launcher bottle is being created.
+    static let creatingMarker = ".mgl-creating"
+
     /// Launcher bottles first, then CrossOver bottles.
     public func discover(fileManager: FileManager = .default) -> [Bottle] {
-        let launcher = subfolders(of: paths.bottlesFolder, fileManager: fileManager).map { url in
+        let launcher = subfolders(of: paths.bottlesFolder, fileManager: fileManager)
+            // A bottle still being created (or abandoned by a crash during creation) is not usable.
+            .filter { !fileManager.fileExists(atPath: $0.appending(path: Self.creatingMarker).path) }
+            .map { url in
             Bottle(name: url.lastPathComponent, url: url, owner: .launcher, settings: loadSettings(at: url))
         }
         let crossOver = subfolders(of: paths.crossOverBottlesFolder, fileManager: fileManager)
@@ -134,7 +140,9 @@ public enum CrossOverConfig {
         case .wined3d: desired["CX_GRAPHICS_BACKEND"] = "wined3d"
         }
 
-        var lines = text.isEmpty ? [] : text.components(separatedBy: "\n")
+        // Keep the file's line endings (CrossOver may write CRLF).
+        let newline = text.contains("\r\n") ? "\r\n" : "\n"
+        var lines = text.isEmpty ? [] : text.components(separatedBy: newline)
         var sectionStart: Int?
         var sectionEnd = lines.count
         for (index, line) in lines.enumerated() {
@@ -175,6 +183,6 @@ public enum CrossOverConfig {
                 insertAt += 1
             }
         }
-        return lines.joined(separator: "\n")
+        return lines.joined(separator: newline)
     }
 }

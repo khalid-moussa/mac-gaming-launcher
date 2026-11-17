@@ -4,6 +4,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var importing = false
+    @State private var checking = false
+    @State private var upToDate = false
 
     var body: some View {
         Form {
@@ -17,7 +19,20 @@ struct SettingsView: View {
                         Task { await model.installRuntime() }
                     }
                     .disabled(model.activity != nil)
-                    Button("Nach Updates suchen") { Task { await model.checkForRuntimeUpdate() } }
+                    Button("Nach Updates suchen") {
+                        Task {
+                            checking = true
+                            await model.checkForRuntimeUpdate()
+                            checking = false
+                            upToDate = model.runtimeVersion != nil && model.availableRuntime == nil
+                        }
+                    }
+                    .disabled(model.activity != nil || checking)
+                    if checking {
+                        ProgressView().controlSize(.small)
+                    } else if upToDate {
+                        Label("Aktuell", systemImage: "checkmark").foregroundStyle(.secondary)
+                    }
                 }
                 Text("Quelle: frankea/Whisky (Wine 11 auf CrossOver-Basis, LGPL). Läuft über Rosetta 2.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -30,11 +45,12 @@ struct SettingsView: View {
                         Label("Game Porting Toolkit 4 · Metal 4 aktiv", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
                     }
                     Button("Entfernen", role: .destructive) { Task { await model.removeD3DMetal() } }
+                        .disabled(model.activity != nil)
                 } else {
                     Text("Apples D3DMetal übersetzt DirectX 11/12 nach Metal und ist für die meisten DX12-Spiele nötig. Apple erlaubt keine Weitergabe – lade das Game Porting Toolkit (kostenloses Entwicklerkonto) und importiere die .dmg.")
                         .font(.callout).foregroundStyle(.secondary)
                     HStack {
-                        Button("GPTK-.dmg importieren …") { importing = true }
+                        Button("GPTK-Image (.dmg) importieren …") { importing = true }
                             .disabled(model.runtimeVersion == nil || model.activity != nil)
                         Link("Download bei Apple", destination: URL(string: "https://developer.apple.com/games/game-porting-toolkit/")!)
                     }

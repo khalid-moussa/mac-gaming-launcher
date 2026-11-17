@@ -73,13 +73,6 @@ public struct Wine: Sendable {
         }
     }
 
-    /// Whether the bottle's wineserver is running.
-    public func isRunning() async -> Bool {
-        guard engine.kind == .managed else { return !ProcessList.wineProcesses(inPrefix: bottle.url).isEmpty }
-        let result = try? await ProcessRunner.run(engine.wineserverBinary, arguments: ["-k0"], environment: ["WINEPREFIX": bottle.url.path], timeout: .seconds(10))
-        return result?.succeeded ?? false
-    }
-
     /// Waits until every process in the bottle has exited.
     public func waitForExit(timeout: Duration = .seconds(300)) async {
         guard engine.kind == .managed else { return }

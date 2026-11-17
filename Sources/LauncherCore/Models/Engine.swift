@@ -74,7 +74,8 @@ public struct Engine: Identifiable, Sendable, Hashable {
         if d3dMetal != nil || kind == .crossOver { result.append(.d3dMetal) }
         if dxmtFolder != nil || kind == .crossOver { result.append(.dxmt) }
         if dxvkFolder != nil || kind == .crossOver { result.append(.dxvk) }
-        result.append(.wined3d)
+        // With D3DMetal deployed, Wine's builtin D3D DLLs are Apple's forwarders, so WineD3D is not available.
+        if d3dMetal == nil || kind == .crossOver { result.append(.wined3d) }
         return result
     }
 }

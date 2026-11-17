@@ -25,6 +25,8 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Hashable {
 enum SidebarItem: Hashable {
     case library(LibraryFilter)
     case bottle(Bottle.ID)
+    /// Games of the native macOS Steam client.
+    case macSteam
 }
 
 enum SessionState: Equatable {
@@ -66,9 +68,16 @@ final class AppModel {
     private(set) var d3dMetalImported: D3DMetalInfo?
     private(set) var rosettaInstalled = Rosetta.isInstalled
 
-    var selection: SidebarItem? = .library(.all)
+    /// Changing the sidebar selection or the search leaves an open game detail (otherwise the click seems to do nothing).
+    var selection: SidebarItem? = .library(.all) {
+        didSet { if selection != oldValue { selectedGameID = nil } }
+    }
     var selectedGameID: SteamGame.ID?
-    var searchText = ""
+    var searchText = "" {
+        didSet { if searchText != oldValue, !searchText.isEmpty { selectedGameID = nil } }
+    }
+    private var refreshGeneration = 0
+    private var launchTasks: [SteamGame.ID: Task<Void, Never>] = [:]
     var activity: Activity?
     var errorMessage: String?
     var bottleSettingsTarget: Bottle?
@@ -124,6 +133,7 @@ final class AppModel {
             result = result.filter { lastPlayed(for: $0) != nil }
                 .sorted { (lastPlayed(for: $0) ?? .distantPast) > (lastPlayed(for: $1) ?? .distantPast) }
         case .bottle(let id): result = result.filter { $0.bottleID == id }
+        case .macSteam: result = result.filter(isMacSteamGame)
         case .library(.all), .none: break
         }
         if !searchText.isEmpty {
@@ -137,7 +147,25 @@ final class AppModel {
     }
 
     func playtimeText(for game: SteamGame) -> String {
-        PlaytimeStore.format(playtime.record(for: game.id).total)
+        PlaytimeStore.format(playtime.total(for: game.id))
+    }
+
+    /// Why a state-changing action can't run right now, or `nil`.
+    var busyMessage: String? {
+        activity.map { "Bitte warten, bis „\($0.title.trimmingCharacters(in: CharacterSet(charactersIn: " …")))“ abgeschlossen ist." }
+    }
+
+    func hasRunningSession(in bottle: Bottle) -> Bool {
+        sessions.keys.contains { id in games.first { $0.id == id }?.bottleID == bottle.id }
+    }
+
+    /// Whether any process runs in a bottle that uses the managed runtime (fresh scan, off the main actor).
+    private func managedRuntimeInUse() async -> Bool {
+        let prefixes = bottles.filter { $0.engineKind == .managed }.map(\.url)
+        return await Task.detached {
+            let processes = ProcessList.current()
+            return prefixes.contains { !ProcessList.wineProcesses(inPrefix: $0, from: processes).isEmpty }
+        }.value
     }
 
     func effectiveBackend(for game: SteamGame) -> GraphicsBackend? {
@@ -149,6 +177,9 @@ final class AppModel {
 
     /// Rescans engines, bottles, Steam libraries and accounts (file I/O off the main actor).
     func refresh() async {
+        // Overlapping refreshes (monitor loop, ⌘R, after an action): only the newest one may publish.
+        refreshGeneration += 1
+        let generation = refreshGeneration
         let paths = paths
         let snapshot = await Task.detached(priority: .userInitiated) { () -> Snapshot in
             let engines = EngineLocator(paths: paths).discover()
@@ -176,6 +207,7 @@ final class AppModel {
                 d3dMetal: D3DMetalInstaller(paths: paths).importedInfo()
             )
         }.value
+        guard generation == refreshGeneration else { return }
 
         engines = snapshot.engines
         bottles = snapshot.bottles
@@ -189,6 +221,7 @@ final class AppModel {
         rosettaInstalled = Rosetta.isInstalled
         if let id = selectedGameID, !games.contains(where: { $0.id == id }) { selectedGameID = nil }
         if case .bottle(let id) = selection, bottle(id: id) == nil { selection = .library(.all) }
+        if selection == .macSteam, !macSteamInstalled { selection = .library(.all) }
         hasLoaded = true
     }
 
@@ -214,8 +247,10 @@ final class AppModel {
     }
 
     func checkForRuntimeUpdate() async {
+        guard activity == nil else { return }
         do {
             let release = try await RuntimeInstaller(paths: paths).fetchLatestRelease()
+            guard activity == nil else { return } // an install finished meanwhile; its result wins
             if let installed = runtimeVersion, !RuntimeInstaller.isNewer(release.version, than: installed) {
                 availableRuntime = nil
             } else {
@@ -230,8 +265,8 @@ final class AppModel {
 
     /// Runs `operation` with an activity indicator and error reporting. Only one at a time.
     private func perform(_ title: String, _ operation: () async throws -> Void) async {
-        if let running = activity {
-            errorMessage = "Bitte warten, bis „\(running.title.trimmingCharacters(in: CharacterSet(charactersIn: " …")))“ abgeschlossen ist."
+        if let busyMessage {
+            errorMessage = busyMessage
             return
         }
         activity = Activity(title: title)
@@ -251,16 +286,24 @@ final class AppModel {
             // softwareupdate needs admin rights; macOS asks for the password.
             let script = "do shell script \"\(Rosetta.installCommand)\" with administrator privileges"
             let result = try await ProcessRunner.run(URL(filePath: "/usr/bin/osascript"), arguments: ["-e", script], timeout: .seconds(900))
+            if result.output.contains("(-128)") { throw CancellationError() } // user cancelled the password prompt
             guard result.succeeded else { throw LauncherError("Rosetta konnte nicht installiert werden.", detail: result.output) }
         }
     }
 
-    func installRuntime() async {
-        // Replacing the Wine tree under a running wineserver breaks the bottle.
-        if bottles.contains(where: { $0.owner == .launcher && steamRunning.contains($0.id) }) || sessions.isEmpty == false {
-            errorMessage = "Bitte zuerst Steam und alle Spiele beenden, bevor die Runtime aktualisiert wird."
-            return
+    /// Replacing files in the shared Wine tree under a running wineserver breaks the bottles that use it.
+    private func ensureRuntimeIdle(_ action: String) async -> Bool {
+        if let busyMessage { errorMessage = busyMessage; return false }
+        let inUse = await managedRuntimeInUse()
+        if !sessions.isEmpty || inUse {
+            errorMessage = "Bitte zuerst Steam, alle Spiele und Wine-Programme beenden, bevor \(action)."
+            return false
         }
+        return true
+    }
+
+    func installRuntime() async {
+        guard await ensureRuntimeIdle("die Runtime aktualisiert wird") else { return }
         await perform("Runtime wird geladen …") {
             let installer = RuntimeInstaller(paths: paths)
             let release: RuntimeRelease
@@ -273,9 +316,13 @@ final class AppModel {
             try await installer.install(release) { [weak self] phase in
                 Task { @MainActor in self?.update(phase) }
             }
-            let paths = paths
-            try await Task.detached { try D3DMetalInstaller(paths: paths).deployIfImported() }.value
             availableRuntime = nil
+            let paths = paths
+            do {
+                try await Task.detached { try D3DMetalInstaller(paths: paths).deployIfImported() }.value
+            } catch {
+                throw LauncherError("Die Runtime wurde aktualisiert, aber D3DMetal konnte nicht wieder eingebunden werden.", detail: error.localizedDescription)
+            }
         }
     }
 
@@ -333,14 +380,18 @@ final class AppModel {
         }.value
     }
 
-    nonisolated static func executables(in folder: URL) -> [URL] {
-        let names = SteamLibrary.executableNames(in: folder)
-        guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
+    /// Game executables (depth-limited walk, so large asset folders can't hide them).
+    nonisolated static func executables(in folder: URL, maxDepth: Int = 5) -> [URL] {
+        let names = SteamLibrary.executableNames(in: folder, maxDepth: maxDepth)
+        guard !names.isEmpty,
+              let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        else { return [] }
         var result: [URL] = []
         var visited = 0
         for case let url as URL in enumerator {
             visited += 1
-            if visited > 20_000 || result.count >= names.count * 2 { break }
+            if visited > 300_000 || result.count >= names.count * 2 { break }
+            if enumerator.level >= maxDepth { enumerator.skipDescendants() }
             if names.contains(url.lastPathComponent.lowercased()) { result.append(url) }
         }
         return result
@@ -370,6 +421,10 @@ final class AppModel {
     }
 
     func quitSteam(in bottle: Bottle) async {
+        if hasRunningSession(in: bottle) {
+            errorMessage = "In „\(bottle.name)“ läuft noch ein Spiel. Bitte zuerst das Spiel beenden."
+            return
+        }
         await perform("Steam wird beendet …") {
             try await client(for: bottle).shutdown()
         }
@@ -383,25 +438,44 @@ final class AppModel {
 
     // MARK: - Games
 
+    /// Starts a game from the UI; the launch can be cancelled while it is still preparing.
+    func launch(_ game: SteamGame) {
+        guard launchTasks[game.id] == nil else { return }
+        launchTasks[game.id] = Task {
+            await play(game)
+            launchTasks[game.id] = nil
+        }
+    }
+
+    /// Cancels a launch that hasn't reached the running game yet (Steam keeps whatever it already received).
+    func cancelLaunch(_ game: SteamGame) {
+        guard case .preparing = sessions[game.id] else { return }
+        launchTasks[game.id]?.cancel()
+    }
+
     func play(_ game: SteamGame) async {
         guard sessions[game.id] == nil else { return }
+        // Runtime updates, GPTK import and bottle deletion change files the game would run on.
+        if let busyMessage { errorMessage = busyMessage; return }
         if isMacSteamGame(game) { return await playWithMacSteam(game) }
         guard let bottle = bottle(for: game) else { return }
         do {
             let client = try client(for: bottle)
             sessions[game.id] = .preparing("Wird vorbereitet …")
             try await prepareSteam(client)
+            let executables = await Task.detached { SteamLibrary.executableNames(in: game.installFolder) }.value
+            let monitor = GameMonitor(bottle: bottle, installFolder: game.installFolder, executableNames: executables)
 
+            let command = ["-applaunch", game.appID]
             if !client.isRunning {
                 sessions[game.id] = .preparing("Steam startet …")
-                try await client.ensureRunning(visible: accounts[bottle.id] == nil, timeout: .seconds(300))
-                // Give the client a moment to finish logging in before handing over the launch.
-                try await Task.sleep(for: .seconds(8))
+                // The launch rides on the first start; Steam runs it once login and self-update are done.
+                let started = try await client.ensureRunning(visible: accounts[bottle.id] == nil, command: command, timeout: .seconds(300))
+                if !started { try await client.send(command) }
+            } else {
+                try await client.send(command)
             }
             sessions[game.id] = .preparing("Spiel startet …")
-            let executables = await Task.detached { SteamLibrary.executableNames(in: game.installFolder) }.value
-            let monitor = GameMonitor(bottle: bottle, executableNames: executables)
-            try await client.launch(appID: game.appID)
 
             guard try await monitor.waitForStart(timeout: .seconds(240)) else {
                 sessions[game.id] = nil
@@ -424,9 +498,9 @@ final class AppModel {
     func stop(_ game: SteamGame) async {
         let names = await Task.detached { SteamLibrary.executableNames(in: game.installFolder) }.value
         if isMacSteamGame(game) {
-            await GameMonitor(macGame: game, executableNames: names).terminate()
+            await GameMonitor(macGame: game, executableNames: names, excludedPrefixes: bottles.map(\.url)).terminate()
         } else if let bottle = bottle(for: game) {
-            await GameMonitor(bottle: bottle, executableNames: names).terminate()
+            await GameMonitor(bottle: bottle, installFolder: game.installFolder, executableNames: names).terminate()
         }
     }
 
@@ -435,12 +509,15 @@ final class AppModel {
         sessions[game.id] = .preparing("Steam (macOS) startet das Spiel …")
         defer { sessions[game.id] = nil }
         let executables = await Task.detached { SteamLibrary.executableNames(in: game.installFolder) }.value
-        let monitor = GameMonitor(macGame: game, executableNames: executables)
-        guard NSWorkspace.shared.open(MacSteamLibrary.launchURL(appID: game.appID)) else {
-            errorMessage = "Steam (macOS) konnte nicht geöffnet werden."
-            return
-        }
+        let monitor = GameMonitor(macGame: game, executableNames: executables, excludedPrefixes: bottles.map(\.url))
         do {
+            // Open the URL explicitly with the Mac client, whichever app claims the steam: scheme.
+            guard let app = MacSteamLibrary(home: paths.home).appBundle else {
+                throw LauncherError("Steam (macOS) wurde nicht gefunden.")
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            _ = try await NSWorkspace.shared.open([MacSteamLibrary.launchURL(appID: game.appID)], withApplicationAt: app, configuration: configuration)
             guard try await monitor.waitForStart(timeout: .seconds(240)) else {
                 errorMessage = "„\(game.name)“ wurde nicht erkannt. Falls Steam ein Fenster zeigt (Update, EULA, Cloud-Sync), bitte dort bestätigen."
                 return
@@ -458,11 +535,14 @@ final class AppModel {
     func installGame(appID: String, in bottle: Bottle) async {
         await perform("Installation wird in Steam geöffnet …") {
             let client = try client(for: bottle)
-            if !client.isRunning {
+            let command = ["steam://install/\(appID)"]
+            if client.isRunning {
+                try await client.send(command)
+            } else {
                 try await prepareSteam(client)
-                try await client.ensureRunning(visible: true, timeout: .seconds(300))
+                let started = try await client.ensureRunning(visible: true, command: command, timeout: .seconds(300))
+                if !started { try await client.send(command) }
             }
-            try await client.install(appID: appID)
         }
     }
 
@@ -478,6 +558,10 @@ final class AppModel {
     }
 
     func restartSteam(in bottle: Bottle) async {
+        if hasRunningSession(in: bottle) {
+            errorMessage = "In „\(bottle.name)“ läuft noch ein Spiel. Die Änderungen gelten ab dem nächsten Steam-Start."
+            return
+        }
         await quitSteam(in: bottle)
         await openSteam(in: bottle)
     }
@@ -489,6 +573,7 @@ final class AppModel {
     }
 
     func runTool(_ tool: String, in bottle: Bottle) async {
+        if let busyMessage { errorMessage = busyMessage; return }
         do {
             let wine = try client(for: bottle).wine
             Task.detached { _ = try? await wine.run(tool, timeout: nil) }
@@ -504,15 +589,18 @@ final class AppModel {
     }
 
     func importD3DMetal(from url: URL) async {
+        guard await ensureRuntimeIdle("D3DMetal importiert wird") else { return }
         await perform("Game Porting Toolkit wird importiert …") {
             let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            let info = try await D3DMetalInstaller(paths: paths).importPayload(from: url)
+            let paths = paths
+            let info = try await Task.detached { try await D3DMetalInstaller(paths: paths).importPayload(from: url) }.value
             d3dMetalImported = info
         }
     }
 
     func removeD3DMetal() async {
+        guard await ensureRuntimeIdle("D3DMetal entfernt wird") else { return }
         await perform("D3DMetal wird entfernt …") {
             let paths = paths
             try await Task.detached { try D3DMetalInstaller(paths: paths).remove() }.value

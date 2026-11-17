@@ -17,6 +17,7 @@ final class ImageLoader {
         configuration.requestCachePolicy = .returnCacheDataElseLoad
         session = URLSession(configuration: configuration)
         memory.countLimit = 400
+        memory.totalCostLimit = 1 << 30 // ~1 GB of decoded pixels (hero art is ~19 MB each)
     }
 
     func cached(_ url: URL) -> NSImage? { memory.object(forKey: url as NSURL) }
@@ -27,12 +28,19 @@ final class ImageLoader {
             if let image = cached(url) { return image }
             do {
                 let (data, response) = try await session.data(from: url)
-                guard (response as? HTTPURLResponse)?.statusCode == 200, let image = NSImage(data: data) else {
-                    failed.insert(url)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                guard status == 200, let image = NSImage(data: data) else {
+                    // Only permanent misses are remembered; 5xx/429 may succeed later.
+                    if status == 403 || status == 404 || status == 200 { failed.insert(url) }
                     continue
                 }
-                memory.setObject(image, forKey: url as NSURL)
+                let pixels = image.representations.map { $0.pixelsWide * $0.pixelsHigh }.max() ?? 0
+                memory.setObject(image, forKey: url as NSURL, cost: pixels * 4)
                 return image
+            } catch is CancellationError {
+                return nil
+            } catch let error as URLError where error.code == .cancelled {
+                return nil
             } catch {
                 continue
             }
@@ -61,7 +69,11 @@ struct CachedImage<Placeholder: View>: View {
             }
         }
         .task(id: urls) {
-            if image == nil { image = await ImageLoader.shared.image(for: urls) }
+            if let cached = urls.lazy.compactMap({ ImageLoader.shared.cached($0) }).first {
+                image = cached
+            } else if let loaded = await ImageLoader.shared.image(for: urls) {
+                image = loaded
+            }
         }
     }
 }

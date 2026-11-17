@@ -218,8 +218,10 @@ struct ProcessListTests {
         #expect(process.arguments == [#"C:\Program Files (x86)\Steam\steam.exe"#])
     }
 
-    /// Against the live system: any running Wine process must be attributed to its prefix.
-    @Test func liveWineProcessesHavePrefix() {
+    /// Against the live system: any running Wine process must be attributed to its prefix. Opt-in, because it depends
+    /// on what happens to run (e.g. a Homebrew wine without WINEPREFIX).
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MGL_LIVE"] == "1"))
+    func liveWineProcessesHavePrefix() {
         let wine = ProcessList.current().filter { $0.windowsImageName != nil }
         for process in wine {
             #expect(process.winePrefix != nil, "\(process.commandName) ohne WINEPREFIX")

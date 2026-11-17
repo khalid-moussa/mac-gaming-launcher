@@ -55,16 +55,21 @@ public struct BottleSettings: Codable, Sendable, Hashable {
 
     // Tolerate missing keys so older/newer files still decode.
     public init(from decoder: any Decoder) throws {
+        // Each field on its own: one unknown or mistyped value must not reset all the others.
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = BottleSettings()
-        graphics = try container.decodeIfPresent(GraphicsBackend.self, forKey: .graphics) ?? defaults.graphics
-        msync = try container.decodeIfPresent(Bool.self, forKey: .msync) ?? defaults.msync
-        advertiseAVX = try container.decodeIfPresent(Bool.self, forKey: .advertiseAVX) ?? defaults.advertiseAVX
-        metalHUD = try container.decodeIfPresent(Bool.self, forKey: .metalHUD) ?? defaults.metalHUD
-        metalFX = try container.decodeIfPresent(Bool.self, forKey: .metalFX) ?? defaults.metalFX
-        retina = try container.decodeIfPresent(Bool.self, forKey: .retina) ?? defaults.retina
-        windowsVersion = try container.decodeIfPresent(String.self, forKey: .windowsVersion) ?? defaults.windowsVersion
-        extraSteamArguments = try container.decodeIfPresent([String].self, forKey: .extraSteamArguments) ?? defaults.extraSteamArguments
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            ((try? container.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+        }
+        graphics = (try? container.decodeIfPresent(String.self, forKey: .graphics)).flatMap { $0 }
+            .flatMap(GraphicsBackend.init(rawValue:)) ?? defaults.graphics
+        msync = value(.msync, defaults.msync)
+        advertiseAVX = value(.advertiseAVX, defaults.advertiseAVX)
+        metalHUD = value(.metalHUD, defaults.metalHUD)
+        metalFX = value(.metalFX, defaults.metalFX)
+        retina = value(.retina, defaults.retina)
+        windowsVersion = value(.windowsVersion, defaults.windowsVersion)
+        extraSteamArguments = value(.extraSteamArguments, defaults.extraSteamArguments)
     }
 }
 
@@ -85,7 +90,8 @@ public struct Bottle: Identifiable, Sendable, Hashable {
 
     public init(name: String, url: URL, owner: BottleOwner, settings: BottleSettings = BottleSettings()) {
         self.name = name
-        self.url = url
+        // Normalize once, so a bottle created via a symlinked path has the same ID (and WINEPREFIX) as discovered.
+        self.url = url.resolvingSymlinksInPath().standardizedFileURL
         self.owner = owner
         self.settings = settings
     }

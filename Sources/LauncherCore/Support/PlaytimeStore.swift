@@ -20,18 +20,34 @@ public final class PlaytimeStore: Sendable {
         state.withLock { $0[gameID] ?? Record() }
     }
 
+    /// Key used by launcher 1.x, which stored totals per Steam app ID only.
+    static func legacyKey(_ appID: String) -> String { "legacy#\(appID)" }
+
     /// Adds a finished session. Sessions shorter than 5 seconds are ignored (failed launches).
     public func addSession(gameID: String, start: Date, end: Date = .now) {
         let duration = end.timeIntervalSince(start)
         guard duration >= 5 else { return }
-        let snapshot = state.withLock { records -> [String: Record] in
+        // Persist inside the lock so concurrent sessions can't write older snapshots last.
+        state.withLock { records in
             var record = records[gameID] ?? Record()
+            // Fold in time tracked by launcher 1.x for this app (first session after the upgrade).
+            if let appID = gameID.split(separator: "#").last.map(String.init),
+               let legacy = records.removeValue(forKey: Self.legacyKey(appID)) {
+                record.total += legacy.total
+            }
             record.total += duration
             record.lastPlayed = end
             records[gameID] = record
-            return records
+            persist(records)
         }
-        persist(snapshot)
+    }
+
+    /// Total including time from launcher 1.x that hasn't been folded in yet.
+    public func total(for gameID: String) -> TimeInterval {
+        state.withLock { records in
+            let appID = gameID.split(separator: "#").last.map(String.init) ?? gameID
+            return (records[gameID]?.total ?? 0) + (records[Self.legacyKey(appID)]?.total ?? 0)
+        }
     }
 
     private func persist(_ records: [String: Record]) {
@@ -51,6 +67,10 @@ public final class PlaytimeStore: Sendable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let records = try? decoder.decode([String: Record].self, from: data) { return records }
+        // Launcher 1.x format: {"<appID>": seconds}.
+        if let legacy = try? decoder.decode([String: TimeInterval].self, from: data) {
+            return Dictionary(uniqueKeysWithValues: legacy.map { (legacyKey($0.key), Record(total: $0.value)) })
+        }
         // Never silently overwrite unreadable data: keep a backup.
         let backup = file.deletingPathExtension().appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970)).json")
         try? FileManager.default.copyItem(at: file, to: backup)

@@ -78,7 +78,7 @@ Sources/
 
 ## Fehlersuche
 
-- **Das Steam-Fenster bleibt schwarz:** Starte Steam über das Bottle-Menü neu. Hilft das nicht, trage in den Bottle-Einstellungen unter „Zusätzliche Steam-Argumente“ den Wert `-cef-disable-gpu` ein.
+- **Das Steam-Fenster bleibt schwarz:** Beende Steam über das Bottle-Menü („Steam beenden“) und öffne es wieder, oder nutze in den Bottle-Einstellungen „Sichern & Steam neu starten“. Hilft das nicht, trage in den Bottle-Einstellungen unter „Zusätzliche Steam-Argumente“ den Wert `-cef-disable-gpu` ein.
 - **Das Spiel wird nicht erkannt:** Steam zeigt dann oft ein Fenster an, zum Beispiel für ein Update, eine EULA oder den Cloud-Sync. Bestätige es dort. Weitere Hinweise stehen im Log des Bottles.
 - **Ein DirectX-12-Spiel startet nicht:** Importiere D3DMetal (siehe oben).
 - **Runtime-Probleme:** Installiere die Runtime unter **Einstellungen → Wine-Runtime** neu.

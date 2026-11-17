@@ -38,14 +38,32 @@ struct GraphicsPlanTests {
         let steamKey = #"[HKEY_CURRENT_USER\Software\Wine\AppDefaults\steam.exe\DllOverrides]"#
         let helperKey = #"[HKEY_CURRENT_USER\Software\Wine\AppDefaults\steamwebhelper.exe\DllOverrides]"#
         let gameKey = #"[HKEY_CURRENT_USER\Software\Wine\AppDefaults\game.exe\DllOverrides]"#
-        #expect(text.contains(steamKey + "\r\n\"d3d10\"=-\r\n\"d3d10core\"=\"n,b\"\r\n\"d3d11\"=\"n,b\"\r\n\"d3d12\"=\"\"\r\n\"d3d9\"=\"n,b\"\r\n\"dxgi\"=\"n,b\""))
+        let steamValues = [#""d3d10"="n,b""#, #""d3d10core"="n,b""#, #""d3d11"="n,b""#, #""d3d12"="""#, #""d3d9"=-"#,
+                           #""dxgi"="n,b""#, #""nvapi"="""#, #""nvapi64"="""#, #""nvngx"="""#, #""winemetal"=-"#]
+        #expect(text.contains(steamKey + "\r\n" + steamValues.joined(separator: "\r\n")))
         #expect(text.contains(helperKey))
-        #expect(text.contains("\"nvapi64\"=\"\""))
-        // D3DMetal games use the builtins (Apple's forwarders).
-        #expect(text.contains(gameKey + "\r\n\"d3d10\"=\"b\"\r\n\"d3d10core\"=\"b\"\r\n\"d3d11\"=\"b\"\r\n\"d3d12\"=\"b\"\r\n\"d3d9\"=\"n,b\"\r\n\"dxgi\"=\"b\""))
+        // D3DMetal games use the builtins (Apple's forwarders), NVAPI/NGX included.
+        let gameValues = [#""d3d10"="b""#, #""d3d10core"="b""#, #""d3d11"="b""#, #""d3d12"="b""#, #""d3d9"=-"#,
+                          #""dxgi"="b""#, #""nvapi"=-"#, #""nvapi64"=-"#, #""nvngx"=-"#, #""winemetal"=-"#]
+        #expect(text.contains(gameKey + "\r\n" + gameValues.joined(separator: "\r\n")))
         // steam.exe passed as a "game" must not be overwritten with game overrides.
         #expect(text.components(separatedBy: steamKey).count == 2)
         #expect(text.contains("\"RetinaMode\"=\"n\""))
+    }
+
+    /// With Apple's forwarders deployed as builtins, DXVK/DXMT games must not fall back to them.
+    @Test func nonD3DMetalGamesAvoidAppleForwarders() {
+        for backend in [GraphicsBackend.dxvk, .dxmt] {
+            let deployed = GraphicsPlan.overrides(for: backend, d3dMetalDeployed: true)
+            #expect(deployed["d3d10"] == "n,b")
+            for dll in ["d3d12", "nvapi", "nvapi64", "nvngx"] { #expect(deployed[dll] == "", "\(backend) \(dll)") }
+            let plain = GraphicsPlan.overrides(for: backend, d3dMetalDeployed: false)
+            for dll in ["d3d10", "d3d12", "nvapi", "nvapi64", "nvngx"] { #expect(plain[dll] == String?.none, "\(backend) \(dll)") }
+        }
+        // WineD3D would silently run on Apple's forwarders → not offered while D3DMetal is deployed.
+        #expect(!engine(d3dMetal: "4.0b3").availableBackends.contains(.wined3d))
+        #expect(engine().availableBackends.contains(.wined3d))
+        #expect(GraphicsPlan.gameBackend(for: .wined3d, engine: engine(d3dMetal: "4.0b3")) == .d3dMetal)
     }
 
     @Test func dxmtGamesUseNativeDXMTAndBuiltinWinemetal() {

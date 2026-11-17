@@ -57,20 +57,33 @@ public enum ProcessRunner {
                     continuation.resume(throwing: error)
                     return
                 }
+                // Cancellation that raced with the start (onCancel saw a process that wasn't running yet).
+                if Task.isCancelled { stop(process) }
                 if let timeout {
                     timeoutTask.value = Task.detached {
                         try? await Task.sleep(for: timeout)
                         guard !Task.isCancelled, process.isRunning else { return }
                         Log.wine.warning("Timeout nach \(timeout) – beende \(executable.lastPathComponent, privacy: .public)")
-                        process.terminate()
+                        stop(process)
                     }
                 }
             }
         } onCancel: {
-            if process.isRunning { process.terminate() }
+            stop(process)
         }
 
         return ProcessResult(status: status, output: readTail(of: outputFile, from: startOffset))
+    }
+
+    /// SIGTERM, then SIGKILL if the child is still alive 5 s later.
+    static func stop(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let pid = process.processIdentifier
+        Task.detached {
+            try? await Task.sleep(for: .seconds(5))
+            if process.isRunning { kill(pid, SIGKILL) }
+        }
     }
 
     /// Reads what was appended to `file` since `offset` (at most the last 256 KB).
@@ -78,6 +91,8 @@ public enum ProcessRunner {
         guard let reader = try? FileHandle(forReadingFrom: file) else { return "" }
         defer { try? reader.close() }
         let end = (try? reader.seekToEnd()) ?? offset
+        // The log may have been deleted or truncated meanwhile.
+        guard end > offset else { return "" }
         let start = end > offset + limit ? end - limit : offset
         try? reader.seek(toOffset: start)
         let data = (try? reader.read(upToCount: Int(end - start))) ?? Data()

@@ -17,15 +17,19 @@ public struct BottleProvisioner: Sendable {
         try paths.createOwnedFolders()
         let url = store.newBottleURL(named: name)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let marker = url.appending(path: BottleStore.creatingMarker)
+        FileManager.default.createFile(atPath: marker.path, contents: nil)
         let bottle = Bottle(name: url.lastPathComponent, url: url, owner: .launcher, settings: settings)
         try store.save(bottle)
 
         do {
             try await initialize(bottle)
         } catch {
+            await Wine(engine: engine, bottle: bottle, paths: paths).killAll()
             try? FileManager.default.removeItem(at: url)
             throw error
         }
+        try? FileManager.default.removeItem(at: marker)
         return bottle
     }
 

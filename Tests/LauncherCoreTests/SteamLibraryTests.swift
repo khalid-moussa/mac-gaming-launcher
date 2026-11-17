@@ -80,7 +80,6 @@ struct SteamLibraryTests {
         #expect(games.map(\.name) == ["Alpha", "Zeta"])
         let alpha = try #require(games.first)
         #expect(!alpha.isFullyInstalled)
-        #expect(alpha.needsUpdate)
         #expect(games[1].isFullyInstalled)
         #expect(games[1].lastPlayed == Date(timeIntervalSince1970: 1_700_000_000))
         #expect(alpha.id != games[1].id)

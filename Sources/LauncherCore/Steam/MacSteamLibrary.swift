@@ -59,14 +59,28 @@ public struct MacSteamLibrary: Sendable {
 
     public static func launchURL(appID: String) -> URL { URL(string: "steam://rungameid/\(appID)")! }
 
-    /// Running processes of a native/Steam-Play game: macOS executables inside the install folder, or Wine processes
-    /// (Steam Play) whose Windows path points into it.
+    /// Running processes of a native/Steam-Play game: macOS executables inside the install folder (by their real
+    /// executable path — argv[0] may be relative), or Wine processes (Steam Play) whose image lies in the install
+    /// folder (`Z:` path) or carries one of the game's executable names.
     public static func runningProcesses(of game: SteamGame, executableNames: Set<String>, snapshot: [RunningProcess]) -> [RunningProcess] {
         let folders = Set([game.installFolder.standardizedFileURL.path, game.installFolder.resolvingSymlinksInPath().path])
+        let windowsFolders = folders.map { ("z:" + $0).replacingOccurrences(of: "/", with: "\\").lowercased() + "\\" }
         return snapshot.filter { process in
+            if let image = process.windowsImageName {
+                let path = process.normalizedWindowsPath
+                return windowsFolders.contains { path.hasPrefix($0) } || executableNames.contains(image)
+            }
             if folders.contains(where: { process.commandName.hasPrefix($0 + "/") }) { return true }
-            if let image = process.windowsImageName, executableNames.contains(image) { return true }
-            return false
+            guard let path = executablePath(of: process.pid) else { return false }
+            return folders.contains { path.hasPrefix($0 + "/") }
         }
+    }
+
+    /// Absolute, symlink-resolved executable path of a process.
+    static func executablePath(of pid: pid_t) -> String? {
+        var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return URL(filePath: String(decoding: buffer.prefix(Int(length)), as: UTF8.self)).resolvingSymlinksInPath().path
     }
 }

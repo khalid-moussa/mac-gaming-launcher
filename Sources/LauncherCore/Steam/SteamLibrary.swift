@@ -83,6 +83,30 @@ public struct SteamLibrary: Sendable {
         return components.reduce(base) { $0.appending(path: $1, directoryHint: .isDirectory) }.standardizedFileURL
     }
 
+    /// Every Windows spelling of a macOS folder in this prefix, lower-cased with a trailing backslash
+    /// (`c:\program files (x86)\steam\steamapps\common\game\`, `z:\users\…\`, `d:\…\` for mapped drives).
+    public func windowsPathPrefixes(forMacFolder folder: URL, fileManager: FileManager = .default) -> Set<String> {
+        func normalized(_ path: String) -> String {
+            var result = path.replacingOccurrences(of: "/", with: "\\").lowercased()
+            if !result.hasSuffix("\\") { result += "\\" }
+            return result
+        }
+        let folderPaths = Set([folder.standardizedFileURL.path, folder.resolvingSymlinksInPath().path])
+        var result = Set(folderPaths.map { normalized("z:" + $0) })
+        result.insert(normalized(windowsPath(forMacPath: folder)))
+        let dosdevices = bottle.url.appending(path: "dosdevices", directoryHint: .isDirectory)
+        for entry in (try? fileManager.contentsOfDirectory(atPath: dosdevices.path)) ?? [] where entry.count == 2 && entry.hasSuffix(":") {
+            guard let target = try? fileManager.destinationOfSymbolicLink(atPath: dosdevices.appending(path: entry).path) else { continue }
+            let base = (target.hasPrefix("/") ? URL(filePath: target) : dosdevices.appending(path: target)).resolvingSymlinksInPath().path
+            for path in folderPaths {
+                let resolvedBase = base == "/" ? "" : base
+                guard path == resolvedBase || path.hasPrefix(resolvedBase + "/") else { continue }
+                result.insert(normalized(entry + String(path.dropFirst(resolvedBase.count))))
+            }
+        }
+        return result
+    }
+
     /// Converts a macOS path inside the prefix's drives back to a Windows path (`Z:` maps `/`).
     public func windowsPath(forMacPath url: URL) -> String {
         let path = url.standardizedFileURL.path
@@ -123,11 +147,15 @@ public struct SteamLibrary: Sendable {
         let name = state["name"]?.string ?? "App \(appID)"
         // Skip redistributable / tool packages that occasionally get their own manifest.
         if name.localizedCaseInsensitiveContains("redistributable") { return nil }
+        // The install dir must be one folder name inside steamapps/common: empty or `..` would make the whole
+        // library (or more) count as this game's folder.
+        guard let installDir = state["installdir"]?.string, !installDir.isEmpty, installDir != ".", installDir != "..",
+              !installDir.contains("/"), !installDir.contains("\\") else { return nil }
         let lastPlayed = state["LastPlayed"]?.string.flatMap(TimeInterval.init).flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
         return SteamGame(
             appID: appID,
             name: name,
-            installDir: state["installdir"]?.string ?? "",
+            installDir: installDir,
             sizeOnDisk: state["SizeOnDisk"]?.string.flatMap(UInt64.init) ?? 0,
             lastPlayed: lastPlayed,
             stateFlags: state["StateFlags"]?.string.flatMap(Int.init) ?? 0,
@@ -167,15 +195,18 @@ public struct SteamLibrary: Sendable {
 
     // MARK: - Executables
 
-    /// Lower-cased `.exe` names inside a game's install folder (bounded walk), used to recognize the running game.
-    public static func executableNames(in folder: URL, limit: Int = 400, fileManager: FileManager = .default) -> Set<String> {
+    /// Lower-cased `.exe` names inside a game's install folder, used as a fallback to recognize the running game
+    /// (the primary match is the install path). The walk is depth-limited, so huge asset folders can't exhaust it
+    /// before the executables are found.
+    public static func executableNames(in folder: URL, limit: Int = 400, maxDepth: Int = 5, fileManager: FileManager = .default) -> Set<String> {
         guard let enumerator = fileManager.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
         let ignored: Set<String> = ["unitycrashhandler64.exe", "unitycrashhandler32.exe", "crashreportclient.exe", "vc_redist.x64.exe", "vc_redist.x86.exe", "dxsetup.exe", "uninstall.exe", "unins000.exe", "crashpad_handler.exe"]
         var names = Set<String>()
         var visited = 0
         for case let url as URL in enumerator {
             visited += 1
-            if visited > 20_000 || names.count >= limit { break }
+            if visited > 300_000 || names.count >= limit { break }
+            if enumerator.level >= maxDepth { enumerator.skipDescendants() }
             // Don't descend into redistributable folders.
             let lowerName = url.lastPathComponent.lowercased()
             if ["_commonredist", "redist", "redistributables", "directx", "__installer"].contains(lowerName) {

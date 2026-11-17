@@ -4,17 +4,26 @@ import Testing
 
 /// End-to-end setup against the real system (downloads ~460 MB, creates a bottle, installs Steam).
 /// Run explicitly: `MGL_INTEGRATION=1 swift test --filter IntegrationTests`
-/// Uses the app's standard locations, so the app picks up the result.
+///
+/// By default everything lives in an isolated folder (kept between runs to avoid re-downloading) and Steam is shut
+/// down at the end. `MGL_INTEGRATION_REAL=1` uses the app's standard locations instead — only do that while the app
+/// is not running, because the test rewrites the bottle's registry overrides.
 @Suite("Integration (real system)", .serialized, .enabled(if: ProcessInfo.processInfo.environment["MGL_INTEGRATION"] == "1"))
 struct IntegrationTests {
-    let paths = LauncherPaths.standard
+    static let useRealLocations = ProcessInfo.processInfo.environment["MGL_INTEGRATION_REAL"] == "1"
+    let paths: LauncherPaths = {
+        if useRealLocations { return .standard }
+        let root = FileManager.default.temporaryDirectory.appending(path: "MGL-Integration", directoryHint: .isDirectory)
+        return LauncherPaths(root: root, logs: root.appending(path: "Logs"), home: root.appending(path: "home"))
+    }()
 
     func log(_ message: String) {
         print("[integration] \(Date.now.formatted(date: .omitted, time: .standard)) \(message)")
     }
 
     @Test(.timeLimit(.minutes(60))) func setUpRuntimeBottleAndSteam() async throws {
-        #expect(Rosetta.isInstalled)
+        try #require(Rosetta.isInstalled, "Rosetta 2 fehlt: softwareupdate --install-rosetta")
+        log("Ablage: \(paths.root.path)")
 
         // 1. Runtime
         let installer = RuntimeInstaller(paths: paths)
@@ -52,8 +61,8 @@ struct IntegrationTests {
         }
         #expect(client.library.isSteamInstalled)
 
-        // 4. Start Steam visibly (first start self-updates)
-        try await client.prepare(gameExecutables: [], dxmtGames: [])
+        // 4. Start Steam visibly (first start self-updates). DXMT copies next to games are left alone.
+        try await client.prepare(gameExecutables: [], dxmtGames: nil)
         log("Steam wird gestartet")
         try await client.ensureRunning(visible: true, timeout: .seconds(900))
         log("steam.exe läuft: \(client.steamProcesses().map(\.pid))")
@@ -65,6 +74,11 @@ struct IntegrationTests {
         log("steam://open/main zurück nach \(elapsed)")
         #expect(elapsed < .seconds(60))
         #expect(client.isRunning)
+
+        if !Self.useRealLocations {
+            await client.shutdown()
+            #expect(!client.isRunning)
+        }
     }
 }
 

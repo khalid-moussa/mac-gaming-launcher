@@ -5,6 +5,9 @@ import UniformTypeIdentifiers
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @State private var exeTarget: Bottle?
+    @State private var showExeImporter = false
+    @State private var bottleToDelete: Bottle?
+    @State private var bottleToKill: Bottle?
 
     var body: some View {
         @Bindable var model = model
@@ -17,24 +20,47 @@ struct SidebarView: View {
                 }
             }
 
-            if !model.bottles.isEmpty {
+            if !model.bottles.isEmpty || model.macSteamInstalled {
                 Section("Bottles") {
                     ForEach(model.bottles) { bottle in
                         BottleRow(bottle: bottle)
                             .tag(SidebarItem.bottle(bottle.id))
                             .contextMenu { menu(for: bottle) }
                     }
+                    if model.macSteamInstalled {
+                        Label("Steam (macOS)", systemImage: "apple.logo")
+                            .badge(model.games.filter(model.isMacSteamGame).count)
+                            .tag(SidebarItem.macSteam)
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) { accountFooter }
-        .fileImporter(isPresented: Binding(get: { exeTarget != nil }, set: { if !$0 { exeTarget = nil } }),
-                      allowedContentTypes: [.exe, .msi, .item]) { result in
+        // The target is kept separately: SwiftUI may reset `isPresented` before calling the completion.
+        .fileImporter(isPresented: $showExeImporter, allowedContentTypes: [.exe, .msi]) { result in
             if case .success(let url) = result, let bottle = exeTarget {
                 Task { await model.run(executable: url, in: bottle) }
             }
             exeTarget = nil
+        }
+        .confirmationDialog(
+            "„\(bottleToDelete?.name ?? "")“ löschen?",
+            isPresented: Binding(get: { bottleToDelete != nil }, set: { if !$0 { bottleToDelete = nil } }),
+            presenting: bottleToDelete
+        ) { bottle in
+            Button("Löschen", role: .destructive) { Task { await model.deleteBottle(bottle) } }
+        } message: { _ in
+            Text("Das Bottle mit allen darin installierten Spielen und Spielständen, die nicht in der Steam Cloud liegen, wird in den Papierkorb verschoben.")
+        }
+        .confirmationDialog(
+            "Alle Prozesse in „\(bottleToKill?.name ?? "")“ beenden?",
+            isPresented: Binding(get: { bottleToKill != nil }, set: { if !$0 { bottleToKill = nil } }),
+            presenting: bottleToKill
+        ) { bottle in
+            Button("Beenden", role: .destructive) { Task { await model.killBottle(bottle) } }
+        } message: { _ in
+            Text("Laufende Spiele und Steam werden sofort beendet. Nicht gespeicherter Fortschritt geht verloren.")
         }
     }
 
@@ -58,7 +84,10 @@ struct SidebarView: View {
         }
         Divider()
         Button("Einstellungen …", systemImage: "slider.horizontal.3") { model.bottleSettingsTarget = bottle }
-        Button("Windows-Programm ausführen …", systemImage: "app.badge") { exeTarget = bottle }
+        Button("Windows-Programm ausführen …", systemImage: "app.badge") {
+            exeTarget = bottle
+            showExeImporter = true
+        }
         Menu("Werkzeuge", systemImage: "wrench.and.screwdriver") {
             Button("Wine-Konfiguration (winecfg)") { Task { await model.runTool("winecfg", in: bottle) } }
             Button("Registry-Editor") { Task { await model.runTool("regedit", in: bottle) } }
@@ -67,10 +96,10 @@ struct SidebarView: View {
         Divider()
         Button("Im Finder zeigen", systemImage: "folder") { model.reveal(bottle.url) }
         Button("Log anzeigen", systemImage: "doc.text.magnifyingglass") { model.revealLog(for: bottle) }
-        Button("Alle Prozesse beenden", systemImage: "xmark.octagon") { Task { await model.killBottle(bottle) } }
+        Button("Alle Prozesse beenden …", systemImage: "xmark.octagon") { bottleToKill = bottle }
         if bottle.owner == .launcher {
             Divider()
-            Button("Bottle löschen …", systemImage: "trash", role: .destructive) { Task { await model.deleteBottle(bottle) } }
+            Button("Bottle löschen …", systemImage: "trash", role: .destructive) { bottleToDelete = bottle }
         }
     }
 
@@ -88,10 +117,11 @@ struct SidebarView: View {
                 if let url = account.profileURL {
                     Link(destination: url) { Image(systemName: "arrow.up.right.square") }
                         .help("Steam-Profil öffnen")
+                        .accessibilityLabel("Steam-Profil öffnen")
                 }
             }
             .padding(12)
-            .glassEffect(.regular, in: .rect(cornerRadius: 14))
+            .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 14))
             .padding(10)
         }
     }
@@ -114,6 +144,8 @@ private struct BottleRow: View {
                 Circle().fill(.green).frame(width: 7, height: 7).help("Steam läuft")
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(model.steamRunning.contains(bottle.id) ? "Steam läuft" : "")
     }
 
     private var subtitle: String {

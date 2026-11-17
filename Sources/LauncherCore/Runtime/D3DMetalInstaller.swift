@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Imports Apple's D3DMetal (Game Porting Toolkit 3/4) into the managed runtime.
@@ -63,8 +64,13 @@ public struct D3DMetalInstaller: Sendable {
 
         let payload: URL
         if source.pathExtension.lowercased() == "dmg" {
-            let outer = try await Self.attach(source)
-            mounts.append(outer)
+            let outer: URL
+            if let existing = await Self.mountPoint(ofAttached: source) {
+                outer = existing // user already opened it: use it, don't eject it afterwards
+            } else {
+                outer = try await Self.attach(source)
+                mounts.append(outer)
+            }
             if let found = Self.locatePayload(under: outer) {
                 payload = found
             } else {
@@ -72,8 +78,13 @@ public struct D3DMetalInstaller: Sendable {
                 var nestedPayload: URL?
                 let contents = (try? FileManager.default.contentsOfDirectory(at: outer, includingPropertiesForKeys: nil)) ?? []
                 for nested in contents where nested.pathExtension.lowercased() == "dmg" {
-                    let inner = try await Self.attach(nested)
-                    mounts.append(inner)
+                    let inner: URL
+                    if let existing = await Self.mountPoint(ofAttached: nested) {
+                        inner = existing
+                    } else {
+                        inner = try await Self.attach(nested)
+                        mounts.append(inner)
+                    }
                     if let found = Self.locatePayload(under: inner) { nestedPayload = found; break }
                 }
                 guard let nestedPayload else { throw Self.notFound }
@@ -85,6 +96,7 @@ public struct D3DMetalInstaller: Sendable {
         }
 
         let info = try copyToStore(payload)
+        _ = try? await ProcessRunner.run(URL(filePath: "/usr/bin/xattr"), arguments: ["-dr", "com.apple.quarantine", paths.d3dMetalStore.path])
         try deploy()
         return info
     }
@@ -122,6 +134,26 @@ public struct D3DMetalInstaller: Sendable {
 
     // MARK: - Deploy
 
+    /// Records exactly what was placed into the runtime (relative path → SHA-256), so "ours" never depends on the
+    /// current store contents (which change on re-import) or on the runtime version (which changes on update).
+    struct Manifest: Codable {
+        var files: [String: String] = [:]   // e.g. "wine/x86_64-windows/dxgi.dll" → sha256
+        var links: [String] = []            // e.g. "wine/x86_64-unix/dxgi.so"
+        var external: [String] = []         // e.g. "external/libd3dshared.dylib"
+    }
+
+    var manifestFile: URL { paths.d3dMetalStore.appending(path: "deployed.json") }
+
+    func loadManifest() -> Manifest? {
+        guard let data = try? Data(contentsOf: manifestFile) else { return nil }
+        return try? JSONDecoder().decode(Manifest.self, from: data)
+    }
+
+    func saveManifest(_ manifest: Manifest) throws {
+        try FileManager.default.createDirectory(at: paths.d3dMetalStore, withIntermediateDirectories: true)
+        try JSONEncoder().encode(manifest).write(to: manifestFile, options: .atomic)
+    }
+
     /// Re-deploys an imported payload, e.g. after a runtime update replaced the Wine tree. No-op without import.
     public func deployIfImported() throws {
         guard importedInfo() != nil, FileManager.default.fileExists(atPath: wineLib.path) else { return }
@@ -129,6 +161,7 @@ public struct D3DMetalInstaller: Sendable {
     }
 
     /// Places the forwarders into Wine's builtin directory and links the unix side to `libd3dshared.dylib`.
+    /// Idempotent and crash-safe: a previous deployment is undone first, and the manifest is written after every step.
     func deploy() throws {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: peDirectory.path) else {
@@ -137,6 +170,7 @@ public struct D3DMetalInstaller: Sendable {
         guard RuntimeInstaller(paths: paths).isGPTKCapable() else {
             throw LauncherError("Diese Runtime-Version unterstützt D3DMetal nicht.", detail: "Bitte die Runtime aktualisieren.")
         }
+        try undeploy()
         try fileManager.createDirectory(at: originals, withIntermediateDirectories: true)
         let storePE = storeLib.appending(path: "wine/x86_64-windows")
 
@@ -148,79 +182,100 @@ public struct D3DMetalInstaller: Sendable {
             dlls.append((Self.nvapiName, Self.nvapiName))
         }
 
+        var manifest = Manifest()
         for (source, target) in dlls {
+            // After undeploy(), whatever is here is Wine's own file → it becomes the (fresh) backup.
             let destination = peDirectory.appending(path: target)
             let backup = originals.appending(path: target)
             if fileManager.fileExists(atPath: destination.path) {
-                let isOurs = fileManager.contentsEqual(atPath: destination.path, andPath: storePE.appending(path: source).path)
-                if isOurs {
-                    try fileManager.removeItem(at: destination)
-                } else {
-                    // Wine's own DLL (possibly a newer one after a runtime update): it becomes the backup.
-                    try? fileManager.removeItem(at: backup)
-                    try fileManager.moveItem(at: destination, to: backup)
-                }
+                try? fileManager.removeItem(at: backup)
+                try fileManager.moveItem(at: destination, to: backup)
             }
             try fileManager.copyItem(at: storePE.appending(path: source), to: destination)
+            manifest.files["wine/x86_64-windows/\(target)"] = try Self.sha256(of: destination)
+            try saveManifest(manifest)
+
             let unixName = (target as NSString).deletingPathExtension + ".so"
             let link = unixDirectory.appending(path: unixName)
-            if (try? fileManager.destinationOfSymbolicLink(atPath: link.path)) != nil || fileManager.fileExists(atPath: link.path) {
+            if Self.exists(link, fileManager) {
                 let backupSO = originals.appending(path: unixName)
-                if (try? fileManager.destinationOfSymbolicLink(atPath: link.path)) == Self.unixLinkDestination {
-                    try? fileManager.removeItem(at: link)
-                } else {
-                    try? fileManager.removeItem(at: backupSO)
-                    try fileManager.moveItem(at: link, to: backupSO)
-                }
+                try? fileManager.removeItem(at: backupSO)
+                try fileManager.moveItem(at: link, to: backupSO)
             }
             try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: Self.unixLinkDestination)
+            manifest.links.append("wine/x86_64-unix/\(unixName)")
+            try saveManifest(manifest)
         }
 
         let external = wineLib.appending(path: "external")
         try fileManager.createDirectory(at: external, withIntermediateDirectories: true)
         for item in try fileManager.contentsOfDirectory(at: storeLib.appending(path: "external"), includingPropertiesForKeys: nil) {
             let target = external.appending(path: item.lastPathComponent)
-            if fileManager.fileExists(atPath: target.path) || (try? fileManager.destinationOfSymbolicLink(atPath: target.path)) != nil {
-                try fileManager.removeItem(at: target)
-            }
+            if Self.exists(target, fileManager) { try fileManager.removeItem(at: target) }
+            manifest.external.append("external/\(item.lastPathComponent)")
+            try saveManifest(manifest)
             try fileManager.copyItem(at: item, to: target)
         }
         Log.runtime.info("D3DMetal in Runtime eingebunden")
     }
 
-    /// Removes D3DMetal from the runtime and restores Wine's original DLLs.
-    public func remove() throws {
+    /// Undoes the recorded deployment and restores Wine's originals. Files that no longer match what we deployed
+    /// (a runtime update put fresh Wine files there) are left alone and their stale backups dropped.
+    func undeploy() throws {
         let fileManager = FileManager.default
         let storePE = storeLib.appending(path: "wine/x86_64-windows")
-        let names = Self.forwarderDLLs + [Self.metalFXName, Self.nvapiName]
-        for name in names {
-            let destination = peDirectory.appending(path: name)
-            let backup = originals.appending(path: name)
-            let storeName = name == Self.metalFXName ? Self.metalFXSource : name
-            // Only touch files we put there; never delete Wine's own DLL without a backup to restore.
-            let isOurs = fileManager.contentsEqual(atPath: destination.path, andPath: storePE.appending(path: storeName).path)
-            if isOurs {
-                try fileManager.removeItem(at: destination)
-                if fileManager.fileExists(atPath: backup.path) { try fileManager.moveItem(at: backup, to: destination) }
-            }
+        // Without a manifest (older versions), fall back to comparing with the store.
+        let manifest = loadManifest() ?? Manifest(
+            files: Dictionary(uniqueKeysWithValues: (Self.forwarderDLLs + [Self.metalFXName, Self.nvapiName]).compactMap { name in
+                let store = storePE.appending(path: name == Self.metalFXName ? Self.metalFXSource : name)
+                return (try? Self.sha256(of: store)).map { ("wine/x86_64-windows/\(name)", $0) }
+            }),
+            links: Self.unixLibraries.map { "wine/x86_64-unix/\($0)" } + ["wine/x86_64-unix/nvngx.so", "wine/x86_64-unix/nvapi64.so"],
+            external: ["external/libd3dshared.dylib", "external/D3DMetal.framework"]
+        )
 
-            let unixName = (name as NSString).deletingPathExtension + ".so"
-            let link = unixDirectory.appending(path: unixName)
+        for (relative, hash) in manifest.files {
+            let destination = wineLib.appending(path: relative)
+            let backup = originals.appending(path: destination.lastPathComponent)
+            let present = fileManager.fileExists(atPath: destination.path)
+            let ours = present && (try? Self.sha256(of: destination)) == hash
+            if ours || !present {
+                if present { try fileManager.removeItem(at: destination) }
+                if fileManager.fileExists(atPath: backup.path) { try fileManager.moveItem(at: backup, to: destination) }
+            } else {
+                try? fileManager.removeItem(at: backup) // Wine's newer file stays; old backup is stale.
+            }
+        }
+        for relative in manifest.links {
+            let link = wineLib.appending(path: relative)
+            let backupSO = originals.appending(path: link.lastPathComponent)
             if (try? fileManager.destinationOfSymbolicLink(atPath: link.path)) == Self.unixLinkDestination {
-                try? fileManager.removeItem(at: link)
+                try fileManager.removeItem(at: link)
             }
-            let backupSO = originals.appending(path: unixName)
-            if fileManager.fileExists(atPath: backupSO.path) || (try? fileManager.destinationOfSymbolicLink(atPath: backupSO.path)) != nil {
-                try? fileManager.moveItem(at: backupSO, to: link)
-            }
-        }
-        let external = wineLib.appending(path: "external")
-        if fileManager.fileExists(atPath: external.appending(path: "libd3dshared.dylib").path) {
-            for item in (try? fileManager.contentsOfDirectory(at: storeLib.appending(path: "external"), includingPropertiesForKeys: nil)) ?? [] {
-                try? fileManager.removeItem(at: external.appending(path: item.lastPathComponent))
+            if Self.exists(backupSO, fileManager) {
+                if Self.exists(link, fileManager) { try? fileManager.removeItem(at: backupSO) } else { try fileManager.moveItem(at: backupSO, to: link) }
             }
         }
-        try? fileManager.removeItem(at: paths.d3dMetalStore)
+        for relative in manifest.external {
+            let item = wineLib.appending(path: relative)
+            if Self.exists(item, fileManager) { try fileManager.removeItem(at: item) }
+        }
+        try? fileManager.removeItem(at: manifestFile)
+    }
+
+    /// Removes D3DMetal from the runtime, restores Wine's original DLLs and deletes the imported payload.
+    public func remove() throws {
+        if FileManager.default.fileExists(atPath: wineLib.path) { try undeploy() }
+        // Only after every restore succeeded: the store holds the backups.
+        try? FileManager.default.removeItem(at: paths.d3dMetalStore)
+    }
+
+    static func exists(_ url: URL, _ fileManager: FileManager) -> Bool {
+        fileManager.fileExists(atPath: url.path) || (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil
+    }
+
+    static func sha256(of url: URL) throws -> String {
+        SHA256.hash(data: try Data(contentsOf: url, options: .mappedIfSafe)).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Payload discovery
@@ -270,16 +325,36 @@ public struct D3DMetalInstaller: Sendable {
             arguments: ["attach", "-readonly", "-nobrowse", "-plist", image.path],
             timeout: .seconds(120)
         )
-        // hdiutil prints the plist on stdout; strip anything before it.
-        let plistText = result.output.range(of: "<?xml").map { String(result.output[$0.lowerBound...]) } ?? result.output
         guard result.succeeded,
-              let plist = try? PropertyListSerialization.propertyList(from: Data(plistText.utf8), format: nil) as? [String: Any],
+              let plist = plistDictionary(in: result.output),
               let entities = plist["system-entities"] as? [[String: Any]],
               let mountPoint = entities.compactMap({ $0["mount-point"] as? String }).first
         else {
             throw LauncherError("Das Disk-Image konnte nicht geöffnet werden.", detail: image.lastPathComponent)
         }
         return URL(filePath: mountPoint)
+    }
+
+    /// hdiutil may print warnings before or after the plist (macOS 27 prints a deprecation notice).
+    static func plistDictionary(in output: String) -> [String: Any]? {
+        guard let start = output.range(of: "<?xml"), let end = output.range(of: "</plist>", range: start.upperBound..<output.endIndex)
+        else { return nil }
+        let text = String(output[start.lowerBound..<end.upperBound])
+        return try? PropertyListSerialization.propertyList(from: Data(text.utf8), format: nil) as? [String: Any]
+    }
+
+    /// Mount point of `image` if it is already attached.
+    static func mountPoint(ofAttached image: URL) async -> URL? {
+        guard let result = try? await ProcessRunner.run(URL(filePath: "/usr/bin/hdiutil"), arguments: ["info", "-plist"], timeout: .seconds(30)),
+              let plist = plistDictionary(in: result.output),
+              let images = plist["images"] as? [[String: Any]]
+        else { return nil }
+        let wanted = image.resolvingSymlinksInPath().path
+        for entry in images where (entry["image-path"] as? String).map({ URL(filePath: $0).resolvingSymlinksInPath().path }) == wanted {
+            let entities = entry["system-entities"] as? [[String: Any]] ?? []
+            if let mount = entities.compactMap({ $0["mount-point"] as? String }).first { return URL(filePath: mount) }
+        }
+        return nil
     }
 
     static func detach(_ mountPoint: URL) {

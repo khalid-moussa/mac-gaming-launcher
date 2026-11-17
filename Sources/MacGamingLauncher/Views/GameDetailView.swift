@@ -45,8 +45,8 @@ struct GameDetailView: View {
                     .shadow(color: .black.opacity(0.4), radius: 8)
                 HStack(spacing: 12) {
                     playButton
-                    if let bottle = model.bottle(for: game) {
-                        Label(bottle.name, systemImage: "cube")
+                    if let source = model.sourceName(for: game) {
+                        Label(source, systemImage: model.isMacSteamGame(game) ? "apple.logo" : "cube")
                             .font(.callout)
                             .padding(.horizontal, 12).padding(.vertical, 7)
                             .glassEffect(.regular, in: .capsule)

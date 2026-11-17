@@ -129,3 +129,41 @@ struct SteamLibraryTests {
         #expect(names == ["game.exe", "game-win64-shipping.exe"])
     }
 }
+
+@Suite("Native macOS Steam library")
+struct MacSteamLibraryTests {
+    @Test func readsLibrariesAndMatchesProcesses() throws {
+        let fixture = try BottleFixture()
+        defer { fixture.cleanup() }
+        let home = fixture.root.appending(path: "home", directoryHint: .isDirectory)
+        let data = home.appending(path: "Library/Application Support/Steam", directoryHint: .isDirectory)
+        let external = fixture.root.appending(path: "Ext", directoryHint: .isDirectory)
+        try fixture.write(fixture.manifest(appID: "570", name: "Dota 2", installDir: "dota 2 beta"), to: "steamapps/appmanifest_570.acf", in: data)
+        try fixture.write(fixture.manifest(appID: "570", name: "Dota 2 (dupe)"), to: "steamapps/appmanifest_570.acf", in: external)
+        try fixture.write(fixture.manifest(appID: "620", name: "Portal 2"), to: "steamapps/appmanifest_620.acf", in: external)
+        try fixture.write("""
+        "libraryfolders"
+        {
+            "0" { "path" "\(data.path)" }
+            "1" { "path" "\(external.path)" }
+            "2" { "path" "C:\\\\Windows" }
+        }
+        """, to: "config/libraryfolders.vdf", in: data)
+
+        let library = MacSteamLibrary(home: home)
+        #expect(library.libraryFolders().count == 2)
+        let games = library.games()
+        #expect(Set(games.map(\.appID)) == ["570", "620"])
+        #expect(games.allSatisfy { $0.bottleID == MacSteamLibrary.sourceID })
+
+        let dota = try #require(games.first { $0.appID == "570" })
+        let processes = [
+            RunningProcess(pid: 1, commandName: dota.installFolder.appending(path: "game/bin/osx64/dota2.app/Contents/MacOS/dota2").path, arguments: [], winePrefix: nil),
+            RunningProcess(pid: 2, commandName: "/Applications/Steam.app/Contents/MacOS/steam_osx", arguments: [], winePrefix: nil),
+            RunningProcess(pid: 3, commandName: #"C:\Games\other\steam.exe"#, arguments: [], winePrefix: "/p"),
+        ]
+        let matched = GameMonitor(macGame: dota, executableNames: ["steam.exe"]).runningProcesses(processes)
+        #expect(matched.map(\.pid) == [1])
+        #expect(MacSteamLibrary.launchURL(appID: "570").absoluteString == "steam://rungameid/570")
+    }
+}

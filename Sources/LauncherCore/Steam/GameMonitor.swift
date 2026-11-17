@@ -1,24 +1,33 @@
 import Darwin
 import Foundation
 
-/// Recognizes a running game by its Windows executable names inside the bottle.
+/// Recognizes a running game from the process list.
 ///
-/// Wine sets each process's `argv[0]` to the Windows image path, so game processes are matched by image name
-/// (from a scan of the install folder) and by `WINEPREFIX`. Steam's `-applaunch` hands off and exits immediately,
-/// so the wrapper process says nothing about the game's lifetime.
+/// Wine sets each process's `argv[0]` to the Windows image path, so bottle games are matched by image name
+/// (from a scan of the install folder) and by `WINEPREFIX`. Steam's `-applaunch` / `steam://rungameid` hand off and
+/// return immediately, so the launcher process says nothing about the game's lifetime.
 public struct GameMonitor: Sendable {
-    public let bottle: Bottle
-    public let executableNames: Set<String>
+    private let match: @Sendable ([RunningProcess]) -> [RunningProcess]
 
+    /// A game inside a launcher or CrossOver bottle.
     public init(bottle: Bottle, executableNames: Set<String>) {
-        self.bottle = bottle
-        self.executableNames = executableNames.subtracting(GraphicsPlan.steamExecutables)
+        let names = executableNames.subtracting(GraphicsPlan.steamExecutables)
+        let prefix = bottle.url
+        match = { snapshot in
+            guard !names.isEmpty else { return [] }
+            return ProcessList.wineProcesses(inPrefix: prefix, from: snapshot)
+                .filter { $0.windowsImageName.map(names.contains) ?? false }
+        }
+    }
+
+    /// A game of the native macOS Steam client (native, or Windows via Steam Play).
+    public init(macGame game: SteamGame, executableNames: Set<String>) {
+        let names = executableNames.subtracting(GraphicsPlan.steamExecutables)
+        match = { MacSteamLibrary.runningProcesses(of: game, executableNames: names, snapshot: $0) }
     }
 
     public func runningProcesses(_ snapshot: [RunningProcess]? = nil) -> [RunningProcess] {
-        guard !executableNames.isEmpty else { return [] }
-        return ProcessList.wineProcesses(inPrefix: bottle.url, from: snapshot ?? ProcessList.current())
-            .filter { $0.windowsImageName.map(executableNames.contains) ?? false }
+        match(snapshot ?? ProcessList.current())
     }
 
     public var isRunning: Bool { !runningProcesses().isEmpty }

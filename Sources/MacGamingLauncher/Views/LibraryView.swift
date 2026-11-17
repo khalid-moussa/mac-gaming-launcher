@@ -96,7 +96,7 @@ struct GameCard: View {
 
     private var statusLine: String {
         if !game.isFullyInstalled { return "Wird von Steam installiert/aktualisiert" }
-        return [game.sizeOnDisk > 0 ? game.sizeOnDisk.formatted(.byteCount(style: .file)) : nil, model.bottle(for: game)?.name]
+        return [game.sizeOnDisk > 0 ? game.sizeOnDisk.formatted(.byteCount(style: .file)) : nil, model.sourceName(for: game)]
             .compactMap { $0 }.joined(separator: " · ")
     }
 

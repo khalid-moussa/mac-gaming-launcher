@@ -46,6 +46,10 @@ swift run MacGamingLauncher            # Debug-Start
 
 Apple erlaubt keine Weitergabe von D3DMetal. Deshalb liefert der Launcher es nicht mit, sondern du importierst es selbst.
 
+## Nativer Steam-Client für macOS (optional)
+
+Ist zusätzlich der normale Steam-Client für macOS installiert (`/Applications/Steam.app`), zeigt der Launcher auch dessen Bibliothek an. Diese Spiele sind mit „Steam (macOS)“ gekennzeichnet und werden über `steam://rungameid/<id>` an diesen Client übergeben. Die Spielzeit wird trotzdem erfasst. Das betrifft echte Mac-Spiele und, falls [NotProton](https://github.com/NotProtonNot/NotProton) eingerichtet ist, auch Windows-Spiele, die der Mac-Client per Steam Play über CrossOver startet. Der Launcher liest diese Bibliothek nur und verändert den Mac-Client nicht.
+
 ## Aufbau
 
 ```text

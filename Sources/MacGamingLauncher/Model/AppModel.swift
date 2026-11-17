@@ -56,6 +56,8 @@ final class AppModel {
     private(set) var accounts: [Bottle.ID: SteamAccount] = [:]
     private(set) var steamInstalled: Set<Bottle.ID> = []
     private(set) var steamRunning: Set<Bottle.ID> = []
+    /// Native macOS Steam client found (its library is shown alongside the bottles).
+    private(set) var macSteamInstalled = false
     private(set) var sessions: [SteamGame.ID: SessionState] = [:]
     private(set) var hasLoaded = false
 
@@ -85,6 +87,11 @@ final class AppModel {
     func engine(for bottle: Bottle) -> Engine? { engines.first { $0.kind == bottle.engineKind } }
     func bottle(id: Bottle.ID) -> Bottle? { bottles.first { $0.id == id } }
     func bottle(for game: SteamGame) -> Bottle? { bottle(id: game.bottleID) }
+    func isMacSteamGame(_ game: SteamGame) -> Bool { game.bottleID == MacSteamLibrary.sourceID }
+    /// Where a game lives, for display: bottle name or "Steam (macOS)".
+    func sourceName(for game: SteamGame) -> String? {
+        isMacSteamGame(game) ? "Steam (macOS)" : bottle(for: game)?.name
+    }
     var selectedGame: SteamGame? { selectedGameID.flatMap { id in games.first { $0.id == id } } }
 
     /// The bottle used for Steam by default: the first one with Steam, else the first launcher bottle.
@@ -156,12 +163,15 @@ final class AppModel {
                 games += library.games()
                 accounts[bottle.id] = library.accounts().first
             }
+            let macSteam = MacSteamLibrary(home: paths.home)
+            if macSteam.isInstalled { games += macSteam.games() }
             let processes = ProcessList.current()
             let running = Set(bottles.filter { bottle in
                 ProcessList.wineProcesses(inPrefix: bottle.url, from: processes).contains { $0.windowsImageName == "steam.exe" }
             }.map(\.id))
             return Snapshot(
                 engines: engines, bottles: bottles, games: games, accounts: accounts, steamInstalled: installed, steamRunning: running,
+                macSteamInstalled: macSteam.isInstalled,
                 runtimeVersion: RuntimeInstaller(paths: paths).installedVersion(),
                 d3dMetal: D3DMetalInstaller(paths: paths).importedInfo()
             )
@@ -173,6 +183,7 @@ final class AppModel {
         accounts = snapshot.accounts
         steamInstalled = snapshot.steamInstalled
         steamRunning = snapshot.steamRunning
+        macSteamInstalled = snapshot.macSteamInstalled
         runtimeVersion = snapshot.runtimeVersion
         d3dMetalImported = snapshot.d3dMetal
         rosettaInstalled = Rosetta.isInstalled
@@ -188,6 +199,7 @@ final class AppModel {
         let accounts: [Bottle.ID: SteamAccount]
         let steamInstalled: Set<Bottle.ID>
         let steamRunning: Set<Bottle.ID>
+        let macSteamInstalled: Bool
         let runtimeVersion: String?
         let d3dMetal: D3DMetalInfo?
     }
@@ -373,6 +385,7 @@ final class AppModel {
 
     func play(_ game: SteamGame) async {
         guard sessions[game.id] == nil else { return }
+        if isMacSteamGame(game) { return await playWithMacSteam(game) }
         guard let bottle = bottle(for: game) else { return }
         do {
             let client = try client(for: bottle)
@@ -409,9 +422,37 @@ final class AppModel {
     }
 
     func stop(_ game: SteamGame) async {
-        guard let bottle = bottle(for: game) else { return }
         let names = await Task.detached { SteamLibrary.executableNames(in: game.installFolder) }.value
-        await GameMonitor(bottle: bottle, executableNames: names).terminate()
+        if isMacSteamGame(game) {
+            await GameMonitor(macGame: game, executableNames: names).terminate()
+        } else if let bottle = bottle(for: game) {
+            await GameMonitor(bottle: bottle, executableNames: names).terminate()
+        }
+    }
+
+    /// Hands the launch to the native macOS Steam client (which starts itself if needed) and tracks the session.
+    private func playWithMacSteam(_ game: SteamGame) async {
+        sessions[game.id] = .preparing("Steam (macOS) startet das Spiel …")
+        defer { sessions[game.id] = nil }
+        let executables = await Task.detached { SteamLibrary.executableNames(in: game.installFolder) }.value
+        let monitor = GameMonitor(macGame: game, executableNames: executables)
+        guard NSWorkspace.shared.open(MacSteamLibrary.launchURL(appID: game.appID)) else {
+            errorMessage = "Steam (macOS) konnte nicht geöffnet werden."
+            return
+        }
+        do {
+            guard try await monitor.waitForStart(timeout: .seconds(240)) else {
+                errorMessage = "„\(game.name)“ wurde nicht erkannt. Falls Steam ein Fenster zeigt (Update, EULA, Cloud-Sync), bitte dort bestätigen."
+                return
+            }
+            let start = Date.now
+            sessions[game.id] = .running(since: start)
+            try await monitor.waitForExit()
+            playtime.addSession(gameID: game.id, start: start)
+        } catch is CancellationError {
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func installGame(appID: String, in bottle: Bottle) async {
